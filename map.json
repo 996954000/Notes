@@ -1,0 +1,77 @@
+{
+    "mapType" : "type 地图类型",
+    "excelName" : "excelName 表名",
+    "objectType" : 1,
+    "TypeId" : 62,
+    "rowOffset" : 1,
+    "colOffset" : 0,
+    "tableHead" : [
+        {"row1" : "1, 2"},
+        {"row2" : "one, two"}
+    ],
+    "outputProps" : 
+    [
+        {
+            "commonProps" : 
+            [
+                {
+                "name" : "visible",
+                "value" : "true"
+                },
+                {
+                    "name" : "rotation",
+                    "value" : "0.00"
+                }
+            ],
+            "cusProps" : 
+            [
+                {
+                "name" : "cusName",
+                "type" : "cusType",
+                "value" : "cusValue"
+                }
+            ]
+        }
+    ],
+    "filterList": [
+        {
+            "filterProp" : "propName",
+            "compare" : "less || equal || more",
+            "compareValue" : ""
+        }
+    ]
+}
+
+
+
+{
+    "mapType" : "type 地图类型，根据地图类型和enum生成路径",
+    "excelName" : "excelName 表名",
+    "objectType" : "int______""0: ele, 1: group, 2:gameobject",
+    "TypeId" : "int______""类型id_62等",
+    "rowOffset" : "int______""行偏移",
+    "colOffset" : "int______""列偏移",
+    "tableHead" : {
+        "row1" : ["1", "2", "表头"],
+        "row2" : ["one", "two", "第二行表头"]
+    },
+    "outputProps" : [
+        {
+            "commonProp" : "id, rotation, visible...""使用PropertyInfo进行属性的查找与操作"
+        },
+        {
+            "polygon" : "x|y|x,y"
+        },
+        {
+            "tile_item_uuid" : "name,type,value"
+        }
+    ],
+    "gameObject":"topLayer, nextLayer... 当type为gameobject时，根据层级数据查找指定层级下gameobject",
+    "filterList": [
+        {
+
+        }
+    ]
+}
+
+
