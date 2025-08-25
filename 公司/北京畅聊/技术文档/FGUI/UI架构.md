@@ -178,6 +178,17 @@ PMVC将程序的视图层、控制层以及模型层进行分离
 
 
 
+# Vo与更新
+- 项目里的写法基本是：首次回包那里初始化一个核心状态（可以通过初始化一些核心数据），后续的改变在proxy中使用Set方法进行事先初始化好的核心状态的数据更新。
+- 核心状态的数据信息是不暴漏的，只提供安全的信息get方法
+
+
+
+[2025-08-04 11:27:15.480] [NET_PACKET] 2025/8/4 11:27:15 recvData: MountEquipBaseRefreshPreviewRS rsID=16740 {'err_info':{'err_code':2147483648,'err_msg':0,},'header':{'session':1754277582-159,'protocol':338,'ranch_protocol':1,},'equip_info':{'equip_id':51564001,'equip_guid':511,'base_attrs':[{'attr_info':{'attr_id':6520101,'value':231,'min_value':150,'max_value':300,'attr_desc':坐骑防御,'figure':1,'score_tap':1,},'index':1,},{'attr_info':{'attr_id':6500301,'value':130,'min_value':60,'max_value':150,'attr_desc':坐骑暴击率,'figure':2,'score_tap':1,},'index':2,},{'attr_info':{'attr_id':6000606,'value':123,'min_value':75,'max_value':150,'attr_desc':闪避后防御,'figure':1,'score_tap':1,'special_symbol':,'attr_units':},'index':3,},],'equip_name':紫金马缰,'pos':4,'equip_quality':6,'force_value':5679,'lock':0,'equip_season_id':1,'rand_attrs':[{'attr_info':{'attr_id':6500511,'value':1,'min_value':1,'max_value':1,'attr_desc':虚弱,'figure':1,'score_tap':2,'special_symbol':,'attr_units':},'index':1},{'attr_info':{'attr_id':6500512,'value':3,'min_value':3,'max_value':3,'attr_desc':封印,'figure':1,'score_tap':2,'special_symbol':,'attr_units':},'index':2},{'attr_info':{'attr_id':6500513,'value':1,'min_value':1,'max_value':1,'attr_desc':落雷,'figure':1,'score_tap':2,'special_symbol':,'attr_units':},'index':3},{'attr_info':{'attr_id':6500516,'value':1,'min_value':1,'max_value':1,'attr_desc':冰冻,'figure':1,'score_tap':2,'special_symbol':,'attr_units':},'index':4},{'attr_info':{'attr_id':6500517,'value':3,'min_value':3,'max_value':3,'attr_desc':净化,'figure':1,'score_tap':2,'special_symbol':,'attr_units':},'index':5},]},'refresh_cost':[{'itemId':52900001,'Count':100,},],'charge_cost':[{'itemId':34021103,'Count':200,},]}
+
+[2025-08-04 11:27:39.397] [NET_PACKET] SendRQ: MountEquipBaseRefreshRQ rqID=16741 {'equip_guid':511,'refresh_cost':[{'itemId':52900001,'Count':100,},],'index_list':[2,],'charge_cost':[{'itemId':34021103,'Count':200,},]}
+
+[2025-08-04 11:27:39.473] [NET_PACKET] 2025/8/4 11:27:39 recvData: MountEquipBaseRefreshRS rsID=16742 {'err_info':{'err_code':2147483648,'err_msg':0,},'header':{'session':1754277582-161,'protocol':338,'ranch_protocol':1,},'refresh_new_attr':{'base_attr':[{'attr_info':{'attr_id':6520101,'value':230,'min_value':150,'max_value':300,'attr_desc':坐骑防御,'figure':1,'score_tap':1,},'index':1,},{'attr_info':{'attr_id':6500301,'value':130,'min_value':60,'max_value':150,'attr_desc':坐骑暴击率,'figure':2,'score_tap':1,},'index':2,},{'attr_info':{'attr_id':6500401,'value':600,'min_value':240,'max_value':600,'attr_desc':坐骑暴击伤害,'figure':2,'score_tap':2,},'index':3,},],'new_force':8003,}}
 
 
 
