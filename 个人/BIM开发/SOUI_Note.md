@@ -1,0 +1,1980 @@
+# SOUI 2.9.0.3
+- SOUI 一个 C++ DirectUI 库
+- DirectUI是一个UI思路，即少量真实 HWND（通常一个宿主窗口）+ 大量逻辑控件。  
+- MFC/传统 Win32 常见是一控件一 HWND；而 DirectUI 的按钮、列表项等多为“逻辑控件”，没有各自独立 HWND。输入消息先到宿主 HWND（如鼠标/键盘），框架再做命中测试与事件分发，判断哪个逻辑控件被点到。控件外观也由框架使用GDI/Direct2D/Skia等进行自绘。 
+
+| 维度 | 传统 Win32 | DirectUI（窗口化/无子控件自绘） |
+|------|------------|--------------------------------|
+| **窗口与消息** | 大量 `HWND` 子控件，消息在窗口树里分发（`WM_*` 等） | 通常少量顶层窗口，内部多为“逻辑控件”，消息在框架内路由 |
+| **绘制方式** | 控件由系统/通用控件绘制，应用可 `WM_PAINT`、部分自绘 | 大面积自绘（位图/矢量/分层），外观高度可控 |
+| **控件形态** | 按钮、编辑框等标准控件，行为成熟、风格偏系统 | 自定义控件为主，易做皮肤、异形、透明叠层 |
+| **开发成本** | 常见界面搭建快，复杂自定义 UI 反而啰嗦 | 简单界面成本高；复杂炫酷界面更划算 |
+| **无障碍与输入** | 标准控件自带较完整的键盘、读屏等基础 | 需在框架里自行补齐焦点、Tab、无障碍语义等 |
+| **典型适用** | 工具面板、对话框、企业后台式界面 | 资源管理器式界面、富皮肤、强定制交互（微软内部产品曾大量使用 DirectUI 思路） |
+
+传统 Win32 胜在 **标准控件与系统集成**；DirectUI 思路胜在 **整屏自绘与视觉自由度**，代价是 **要自己扛交互与无障碍**。
+
+SOUI 框架的整体架构图，分为上下两层：
+![示意图](./img/SOUIFrame.png)
+---
+
+## Widget 层（上方蓝色区域）—— 控件体系
+
+以 `SWindow` 为所有控件的基类，衍生出两条继承线：
+
+```
+SWindow
+ ├── ISwndContainer（容器接口）
+ │    └── SItemPanel → SListView / SMcListView   （列表/多列列表）
+ ├── SPanel（面板）
+ │    └── SScrollView（可滚动容器）
+ │         └── SListCtrl（复杂列表控件）
+ └── Sbutton / Sstatic / SImage / etc.           （叶子级基础控件）
+```
+
+所有控件都是"逻辑窗口"（无独立 HWND），通过自绘实现显示
+---
+
+## Core 层（下方橙色区域）—— 框架核心
+
+| 模块 | 作用 |
+|------|------|
+| **Application** | 应用程序入口，全局生命周期管理 |
+| **Widget Factory** | 控件工厂，通过 XML 标签名反射创建控件实例 |
+| **Skin Object Factory** | 皮肤对象工厂，管理各类绘制皮肤（图片、颜色、9-patch 等） |
+| **Script Factory** | 脚本工厂，支持脚本语言扩展（Lua 等）绑定 |
+| **Resource Manager** | 资源管理，统一加载 XML/图片/字符串等 |
+| **XML UI** | 解析 XML 布局文件，驱动界面构建 |
+| **Layout** | 布局引擎，计算控件位置和尺寸 |
+| **Widget Container (Host)** | 宿主容器，是真实 HWND 与逻辑控件树之间的桥梁 |
+| **Widget** | 逻辑控件基础层（对应上方 Widget 层） |
+| **Event Dispatcher** | 事件分发，处理鼠标/键盘消息并路由到逻辑控件 |
+| **Focus Manager** | 焦点管理，维护 Tab 键切换、键盘焦点状态 |
+| **Render** | 渲染接口抽象层，可对接 GDI、Skia 等不同后端 |
+| **Language Translator** | 多语言翻译，支持界面本地化 |
+
+---
+
+## 源码 soui 2.x
+https://github.com/setoutsoft/soui
+
+# 手动创建项目
+没找到向导，或者年代久远不好配
+
+## 编译
+- cmake 生成项目文件 sln
+- vsbuild 编译出依赖库等
+
+## 项目创建
+- 新建win32项目
+![示意图](./img/winapp.png)
+
+### 项目配置
+- 把编出来的SOUI & bin 和源码中下载就有的 config & utilities 放项目中
+![示意图](./img/libs.png)
+
+- 设置`附加包含目录`, `附加库目录`，`附加依赖项`
+- 项目 属性 c/c++ 常规 
+  - $(SolutionDir)extra_lib\config
+  - $(SolutionDir)extra_lib\utilities\include
+  - $(SolutionDir)extra_lib\SOUI\include
+![示意图](./img/includePath.png)
+
+- 项目 属性 链接器 常规 
+  - $(SolutionDir)extra_lib/bin
+![示意图](./img/libPath.png)
+
+- 项目 属性 链接器 输入
+  - utilitiesd.lib
+  - souid.lib
+![示意图](./img/extraLib.png)
+
+### 准备SOUI的程序资源
+| 文件名 | 是否固定文件名 | 作用说明 | 备注 |
+|---|---|---|---|
+| `uires.idx` | 是 | 定义资源索引 | 文件名固定，建议放在资源目录根位置 |
+| `init.xml` | 否 | 定义全局 UI 属性（字体、字符串表、`skin`、`style`、`objattr` 等） | 可自定义文件名，但需在加载代码中对应 |
+| `dlg_main.xml` | 否 | 主窗口布局 XML | 可自定义文件名，按实际窗口资源组织 |
+---
+
+- 关于`uires.idx`的最小可运行资源目录结构
+```
+uires/
+├─ uires.idx                # 资源索引（文件名固定）
+├─ init.xml                 # 全局UI定义（可改名）
+├─ xml/
+│  └─ dlg_main.xml          # 主窗口XML（可改名）
+├─ img/                     # 图片资源（png/jpg等）
+├─ skin/                    # 皮肤资源
+└─ font/                    # 字体资源（可选）
+```
+| 路径【除了uires.idx的路径其他的都可以在uires里面自己配】 | 必需 | 说明 |
+|---|---|---|
+| `uires/uires.idx` | 是 | 资源索引入口，文件名固定 |
+| `uires/init.xml` | 是 | 全局 UI 属性定义（字体、字符串表、skin、style、objattr 等） |
+| `uires/xml/dlg_main.xml` | 是（最小示例） | 主窗口布局 XML（文件名可改） |
+| `uires/img/` | 建议 | 存放界面图片资源 |
+| `uires/skin/` | 建议 | 存放皮肤相关资源 |
+| `uires/font/` | 可选 | 自定义字体文件目录 |
+---
+
+### uires.idx 资源索引
+```xml
+<resource>
+<!--指定全局UI属性定义-->
+ <UIDEF>
+ <file name="XML_INIT" path="xml\init.xml" />
+ </UIDEF>
+
+  <!--布局资源-->
+ <LAYOUT>
+ <file name="XML_MAINWND" path="xml\dlg_main.xml" />
+ </LAYOUT>
+</resource>
+```
+
+### init.xml 全局UI属性定义
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<UIDEF>
+	<font face="宋体" size="15"/>
+
+    <!--定义全局string替换对象-->
+	<string>
+		<mainTitle value="title ver:1.0"/>
+	</string>
+	
+	<!--定义全局skin对象-->
+	<skin src="values:skin"/>
+
+	<style>
+		<class name="normalbtn" font="" colorText="#385e8b" colorTextDisable="#91a7c0" textMode="25" cursor="hand" margin-x="0"/>
+	</style>
+
+	<objattr>
+	</objattr>
+</UIDEF>
+```
+
+### dlg_main.xml 主窗口xml布局
+```xml
+<SOUI name="mainWindow" title="@string/mainTitle" width="600" height="400" appWnd="1" margin="20,5,5,5"  resizable="1" translucent="1" >
+	<root skin="_skin.sys.wnd.bkgnd">
+		<caption pos="0,0,-0,30">
+            <!--引用init.xml中定义的字符串对象-->
+			<text pos="11,9">@string/mainTitle</text>
+			<imgbtn name="btn_close" skin="_skin.sys.btn.close"    pos="-45,0" tip="close" animate="1"/>
+			<imgbtn name="btn_max" skin="_skin.sys.btn.maximize"  pos="-83,0" animate="1" />
+			<imgbtn name="btn_restore" skin="_skin.sys.btn.restore"  pos="-83,0" show="0" animate="1" />
+			<imgbtn name="btn_min" skin="_skin.sys.btn.minimize" pos="-121,0" animate="1" />
+		</caption>
+		<window pos="5,30,-5,-5">
+			<text pos="|0,|0" pos2type="center" colorText="#ff0000">Hellow World! UI? Just so so!</text>
+			<button class ="normalbtn" pos="|-50,[20,@100,@30" name="btn_msgbox">show msg box</button>
+		</window>
+	</root>
+</SOUI>
+```
+
+### stdafx.h 引用SOUI头文件
+```c++
+// stdafx.h : 标准系统包含文件的包含文件，
+// 或是经常使用但不常更改的
+// 特定于项目的包含文件
+//
+
+#pragma once
+
+#include "targetver.h"
+
+#define  _CRT_SECURE_NO_WARNINGS
+#define     DLL_SOUI   //SOUI是以DLL提供时需要定义这个宏
+
+#include <souistd.h>
+#include <core/SHostDialog.h>
+#include <control/SMessageBox.h>
+#include <control/souictrls.h>
+
+using namespace SOUI;
+```
+
+### SOUITemplate.cpp 应用程序入口 找 _tWinMain 为程序入口
+```c++
+#include "stdafx.h"
+#include <com-loader.hpp>
+#include "CMainWnd.h"
+
+#ifdef _DEBUG
+#define COM_IMGDECODER _T("imgdecoder-wicd.dll")
+#define COM_RENDER_GDI _T("render-gdid.dll")
+#define SYS_NAMED_RESOURCE _T("soui-sys-resourced.dll")
+#else
+#define COM_IMGDECODER _T("imgdecoder-wic.dll")
+#define COM_RENDER_GDI _T("render-gdi.dll")
+#define SYS_NAMED_RESOURCE _T("soui-sys-resource.dll")
+#endif
+int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/,
+	LPTSTR /*lpstrCmdLine*/, int /*nCmdShow*/)
+{
+	HRESULT hRes = OleInitialize(NULL);
+	SASSERT(SUCCEEDED(hRes));
+
+	int nRet = 0;
+	SComLoader imgDecLoader;
+	SComLoader renderLoader;
+	SComLoader transLoader;
+	{
+		CAutoRefPtr<SOUI::IImgDecoderFactory> pImgDecoderFactory;
+		CAutoRefPtr<SOUI::IRenderFactory> pRenderFactory;
+
+		imgDecLoader.CreateInstance(COM_IMGDECODER, (IObjRef**)&pImgDecoderFactory);
+
+		renderLoader.CreateInstance(COM_RENDER_GDI, (IObjRef**)&pRenderFactory);
+		pRenderFactory->SetImgDecoderFactory(pImgDecoderFactory);
+		SApplication* theApp = new SApplication(pRenderFactory, hInstance); // （统一管理，对外提供查询 & 加载接口）
+		HMODULE hSysResource = LoadLibrary(SYS_NAMED_RESOURCE);
+		if (hSysResource)
+		{
+			CAutoRefPtr<IResProvider> sysSesProvider;
+			CreateResProvider(RES_PE, (IObjRef**)&sysSesProvider);
+			sysSesProvider->Init((WPARAM)hSysResource, 0);
+			theApp->LoadSystemNamedResource(sysSesProvider);
+		}
+		CAutoRefPtr<IResProvider> pResProvider;  // （资源提供者，负责从哪里读文件）
+		CreateResProvider(RES_FILE, (IObjRef**)&pResProvider);
+		if (!pResProvider->Init((LPARAM)_T("uires"), 0))
+		{
+			SASSERT(0);
+			return 1;
+		}
+		theApp->AddResProvider(pResProvider);
+		{//在这里加入主窗口运行代码
+			//在这里加入主窗口运行代码
+			
+			//程序结束
+		}
+		delete theApp;
+	}
+	OleUninitialize();
+	return nRet;
+}
+```
+
+### CMainWnd 为了方便演示全写在头文件里了
+```c++
+#pragma once
+
+#include "stdafx.h"
+
+class CMainWnd : public SHostWnd
+{
+public:
+	CMainWnd()
+		: SHostWnd(_T("LAYOUT:XML_MAINWND"))//这里定义主界面需要使用的布局文件
+	{
+		m_bLayoutInited = FALSE;
+	}
+	void OnClose()
+	{
+		PostMessage(WM_QUIT);
+	}
+	void OnMaximize()
+	{
+		SendMessage(WM_SYSCOMMAND, SC_MAXIMIZE);
+	}
+	void OnRestore()
+	{
+		SendMessage(WM_SYSCOMMAND, SC_RESTORE);
+	}
+	void OnMinimize()
+	{
+		SendMessage(WM_SYSCOMMAND, SC_MINIMIZE);
+	}
+	void OnSize(UINT nType, CSize size)
+	{
+		SetMsgHandled(FALSE);
+		if (!m_bLayoutInited) return;
+		if (nType == SIZE_MAXIMIZED)
+		{
+			FindChildByName(L"btn_restore")->SetVisible(TRUE);
+			FindChildByName(L"btn_max")->SetVisible(FALSE);
+		}
+		else if (nType == SIZE_RESTORED)
+		{
+			FindChildByName(L"btn_restore")->SetVisible(FALSE);
+			FindChildByName(L"btn_max")->SetVisible(TRUE);
+		}
+	}
+	void OnBtnMsgBox()
+	{
+		SMessageBox(NULL, _T("this is a messagebox"),_T("haha"),MB_OK|MB_ICONEXCLAMATION);
+		SMessageBox(NULL, _T("this message box includes twobuttons"),_T("haha"),MB_YESNO|MB_ICONQUESTION);
+		SMessageBox(NULL, _T("this message box includes threebuttons"),NULL,MB_ABORTRETRYIGNORE);
+	}
+
+	BOOL OnInitDialog(HWND hWnd, LPARAM lParam)
+	{
+		m_bLayoutInited = TRUE;
+		return 0;
+	}
+protected:
+	//按钮事件处理映射表
+	EVENT_MAP_BEGIN()
+		EVENT_NAME_COMMAND(L"btn_close", OnClose)
+		EVENT_NAME_COMMAND(L"btn_min", OnMinimize)
+		EVENT_NAME_COMMAND(L"btn_max", OnMaximize)
+		EVENT_NAME_COMMAND(L"btn_restore", OnRestore)
+		EVENT_NAME_COMMAND(L"btn_msgbox", OnBtnMsgBox)
+		EVENT_MAP_END()
+		//窗口消息处理映射表
+		BEGIN_MSG_MAP_EX(CMainWnd)
+		MSG_WM_INITDIALOG(OnInitDialog)
+		MSG_WM_CLOSE(OnClose)
+		MSG_WM_SIZE(OnSize)
+		CHAIN_MSG_MAP(SHostWnd)//注意将没有处理的消息交给基类处理
+		REFLECT_NOTIFICATIONS_EX()
+		END_MSG_MAP()
+private:
+	BOOL		 m_bLayoutInited;
+};
+```
+
+### 添加主窗口运行代码 打开主窗口 CMainWnd
+```c++
+            CMainWnd wndMain;
+			wndMain.Create(GetActiveWindow(), 0, 0, 800, 600);
+			wndMain.SendMessage(WM_INITDIALOG);
+			wndMain.CenterWindow(wndMain.m_hWnd);
+			wndMain.ShowWindow(SW_SHOWNORMAL);
+			nRet = theApp->Run(wndMain.m_hWnd);
+```
+
+## error C2065: “SApplication”: 未声明的标识符
+### 根本原因：C++20 严格模式不兼容 SoUI
+SoUI 的头文件存在**循环包含**：
+
+```
+SApp.h → (内部链) → SSingleton2.h
+                        ↓
+              #include "../SApp.h"  ← 被 #pragma once 阻断！
+                        ↓
+              SApplication 未声明 → 报错
+```
+
+在 C++14/C++17 或非严格模式下，模板中的非依赖名（`SApplication`）查找是延迟的，这个循环能"侥幸绕过"。但 **C++20 严格一致性模式** (`/permissive-`) 要求模板定义时名字必须已可见，于是直接报错。
+### 解决方法
+
+在 Visual Studio 里：
+
+1. 右键项目 → **属性**
+2. 配置选择 `Debug / x64`
+3. **C/C++ → 语言**，找到以下两项修改：
+
+| 设置项 | 当前值 | 改为 |
+|--------|--------|------|
+| C++ 语言标准 | C++20 | **C++17** 或更低 |
+| 符合性模式 | 是 (`/permissive-`) | **否** |
+
+4. 点确定重新编译
+![示意图](./img/demoWindow.png)
+<span style="color:#ff7700;"> 最小示例项目完成 </span>
+
+## 无法解析的外部符号 main
+### SoUI 是 Windows 窗口程序，入口函数不是 main，而是 WinMain
+SoUI 窗口程序需要改成 Windows 子系统：
+右键项目 → 属性
+链接器 → 系统 → 子系统
+从 控制台 (/SUBSYSTEM:CONSOLE) 改为 窗口 (/SUBSYSTEM:WINDOWS)
+改完后链接器才会接受 WinMain 作为入口，不再找 main。
+
+
+# SOUI 布局、资源 与 事件
+- 做 UI 时 页面布局 和 控件事件 大致是最核心、最先上手的两块：
+  - 页面布局：控件怎么摆、层级怎么组织、适配不同分辨率
+  - 控件事件：点击、输入、选择、焦点变化后触发什么逻辑
+- 而资源又是UI必不可少的部分，如皮肤，样式，字体等
+
+## 布局
+SOUI 的布局可以理解成：**“统一的锚点坐标布局体系”**，核心靠 `pos` + `size/width/height` + `offset/pos2type`，`在2.5.1.1 开始支持线性布局`。  
+
+### 1) SOUI 布局的核心思路
+
+- SOUI 主要采用**锚点布局**：你直接描述控件矩形四边（或起点+尺寸），控件会随父窗口尺寸变化自动重算。
+- 设计目标是减少 `WM_SIZE` 里手写重排。
+- 常见写法是 XML 里每个控件给 `pos`，必要时补 `width/height` 或 `offset`。
+
+---
+
+### 2) `pos` ：
+
+`pos` 是布局第一核心，常见两种形式：
+
+- **4 值**：`x1,y1,x2,y2`（left/top/right/bottom）
+- **2 值**：`x,y`（配合 `width/height` 或 `size` 才能完整确定矩形）
+
+
+#### `pos` 关键规则
+- 普通正数：相对父窗口左/上偏移
+- 普通负数：相对父窗口右/下“内缩”
+  - `pos="0,0,-0,-0"` = 填满父区域
+  - `pos="10,10,-10,-10"` = 四边各留 10
+- 支持特殊标记（官方文档列出）：
+  - `|`：相对父窗口中心
+  - `%`：按父窗口百分比
+  - `[` `]` `{` `}`：相对兄弟控件边界
+  - `@`：在 `x2/y2` 位置表达“宽/高”
+
+> 注意：兄弟引用（`[` `]` `{` `}`）写复杂了可能形成循环依赖，官方也提示要谨慎。
+> 
+| 标志 | 含义（简述） |
+|------|----------------|
+| **无标志的负数** | 相对父窗口**右边或下边**向内缩进。如 `0,0,-0,-0` 铺满；`10,10,-10,-10` 四边各缩进 10。 |
+| **`\|`** | 相对父窗口**中心**。如 `|-10` 表示从中心向左/上偏 10 像素。 |
+| **`%`** | 父窗口宽/高的**百分比**（可小数、可负，负的等价于从另一侧算）。 |
+| **`[`** | 相对**前一个兄弟**：X 参考其 right，Y 参考其 bottom。 |
+| **`]`** | 相对**后一个兄弟**：X 参考其 left，Y 参考其 top。 |
+| **`{`** | 相对**前一个兄弟**：X 参考其 left，Y 参考其 top。 |
+| **`}`** | 相对**后一个兄弟**：X 参考其 right，Y 参考其 bottom。 |
+| **`@`** | 只出现在 **第 3、4 个值**，表示**宽高**（尺寸写在 pos 里）。
+
+--- 
+
+### 3) 尺寸属性：`size` / `width` / `height`
+
+- `size="w,h"`：同时给宽高
+- `width` / `height` 可单独给
+- 文档中提到可有：
+  - 固定非负整数
+  - `full`
+  - `-1`（按内容自动）
+- 一般经验：  
+  - 已有 4 值 `pos` 时，尺寸通常已由坐标决定  
+  - 2 值 `pos` 时，必须补尺寸信息
+
+---
+
+### 4) 对齐与偏移：`offset` 和 `pos2type`
+
+这两个是第二核心，专门解决“已定位后再平移”的场景。
+
+#### `offset`
+
+- 形如 `offset="-0.5,-0.5"`
+- **单位不是像素**，而是“控件最终尺寸倍数”
+  - `-0.5,-0.5` = 左移半个自己宽 + 上移半个自己高
+- 所以它特别适合做“未知尺寸控件的居中/贴边”
+
+#### `pos2type`
+
+是 `offset` 的预设快捷值（9 个锚点）：
+
+- `center / lefttop / leftmid / ... / rightbottom`
+- 例如：
+  - `center` 对应 `offset=-0.5,-0.5`
+  - `rightbottom` 对应 `offset=-1,-1`
+
+> 如果两者都写，文档说明“后生效者生效”。
+
+---
+
+### 5) 常用示例
+
+- **铺满容器**：`pos="0,0,-0,-0"`
+- **四周留白**：`pos="L, T, R, B"`
+- **绝对尺寸 + 起点**：`pos="x,y,@w,@h"` 或 `pos="x,y" width="w" height="h"`
+- **动态居中（尺寸未知）**：`pos="|0,|0"` + `offset="-0.5,-0.5"`
+- **右下角锚定**：负坐标 + 必要时 `offset`
+---
+
+### 6) 典型结构：
+- **`<SOUI>`**：整窗属性（宽高、标题、`margin` 等）。
+- **`<skin>` / `<style>`**（可选）：与全局资源不同 此处定义本窗口**局部**皮肤/样式，随窗口销毁。
+- **`<root>`** (非模板布局时必有)：根容器，本质是 `SWindow`，但名字必须是 `root`；**与位置相关的布局属性对 root 无效**，因为它总是铺满宿主客户区。
+
+子控件都在 `<root>` 下面用锚点一层层摆。
+
+### 7) 模块化布局：`include`
+
+被引用的布局文件根节点是 **`<include>`**，里面再写子控件；通过 `src="layout:xxx"` 从 `uires.idx` 里注册的 **LAYOUT** 资源引入。**不能**在纯 `include` 文件里再定义局部 `skin`/`style`
+
+
+## 加个简单的布局示例页面
+- 基础流程：加个 xml 页面 -> 注册 -> 找个类加载xml -> 调这个页面
+
+### 添加xml页面
+- 在`\uires\xml`下新建`layoutTest.xml` 【在所有文件模式或资源管理器中建，后面筛选器里添加进来就行】
+```xml
+<SOUI name="layoutTest" title="@string/mainTitle" width="600" height="400" appWnd="1" margin="20,5,5,5"  resizable="1" translucent="1" >
+	<root skin="_skin.sys.wnd.bkgnd">
+		<caption pos="0,0,-0,30">
+			<text pos="11,9">@string/mainTitle</text>
+			<imgbtn name="btn_close" skin="_skin.sys.btn.close"    pos="-45,0" tip="close" animate="1"/>
+			<imgbtn name="btn_max" skin="_skin.sys.btn.maximize"  pos="-83,0" animate="1" />
+			<imgbtn name="btn_restore" skin="_skin.sys.btn.restore"  pos="-83,0" show="0" animate="1" />
+			<imgbtn name="btn_min" skin="_skin.sys.btn.minimize" pos="-121,0" animate="1" />
+		</caption>
+		
+		
+			<!--left top right bottom 四边基于父窗口左上作偏移-->
+		<window id="999" pos ="10, 10, 100, 100" colorBkgnd="#0000ff"> <!--蓝-->
+		</window>
+		
+			<!--最终几何上必须是 左 ≤ 右、上 ≤ 下，否则容易变成非法/零面积矩形，看起来像不显示-->
+		<window pos ="-10, -10, -100, -100" colorBkgnd="#00ffff"> <!--不显示-->
+		</window>
+		
+		<!--负号则基于父窗口右下作偏移-->
+		<window pos ="-100, -100, -10, -10" colorBkgnd="#00ffff"> <!--青-->
+		</window>
+		
+			<!--若只提供部分几何信息，则需要通过 width 和 height 补充-->
+			<!--width 和 height 为 full 时，代表高度或者宽度和父窗口的客户区大小相等。
+			-1 代表根据窗口内容自动计算窗口大小。
+			非负整数直接指定窗口大小-->
+		<window pos ="{20, {0" width = "90" height ="90" colorBkgnd="#ff0000">	<!--红-->
+		</window>
+
+		<!--offset 在 pos 属性完成坐标定位后再将坐标进行偏移，用于调整窗口位置，偏移量以控件最后的大小为单位进行平移，
+			-1, -1 代表窗口位置向左上移动一个窗口宽度或者高度
+			@ 效果和 width 以及 height效果相同	-->
+		<window pos ="{20, |0, @90, @90" offset ="-1, -1" colorBkgnd="#ff00ff">	<!--紫-->
+		</window>
+
+		<!--pos 坐标对应控件的左上角。但有时候你想说「这个坐标是我控件的中心」或者「右上角」，就可以用 pos2type 属性来指定  -->
+		<!--<window pos ="{20, {0, @90, @90" pos2type="rightbottom" colorBkgnd="#00ff00">	--><!--绿--><!--
+		</window>--> <!--不好用 注释掉 带过-->
+		<!--pos2type 是 2014 年前的旧写法，只能是 0、-0.5、-1 这几档；
+		offset 是 2014 年后新增的，可以写任意小数，更灵活；
+		两个属性同时写只有最后一个生效，推荐直接用 offset，pos2type 只是为了向后兼容。-->
+
+
+		<!--SOUI 2.5.1.1 开始支持线性布局(LinearLayout).
+		vbox 为垂直线性布局, hbox 为水平线性布局
+		
+		gravity 属性, 用来指定子窗口的默认排列模式 [从哪往哪排]
+		vbox: left(默认), center, right;
+		hbox: top(默认), center, bottom.
+		
+		线性布局中的子窗口 pos 属性没有意义, 一般直接指定 size="width,height",
+		width/height 值: -1 代表 wrap_content, -2 代表 match_parent
+		
+		使用 extend="left,top,right,bottom", extend_left, extend_top, extend_right,
+		extend_bottom 来指定间距. (相当于 android 的 margin)-->
+		<window pos ="|20, |0, @100, @90" layout="hbox">  <!--窗口虽然不会截断按钮的显示 但会截掉按钮的点击区域-->
+				<button size="100,30">按钮1</button>
+				<button size="100,30" extend_left="0">按钮2</button>
+				<button size="100,30" extend_left="10">按钮3</button>
+		</window>
+
+		<!--相对于特定兄弟窗口进行布局
+		被参考窗口（假定为窗口 A）必须要指定窗口的 ID 属性，必须是ID name不行
+		当前窗口指定pos时加上 
+		sib.left@999:    
+		sib.bottom@999: 
+		用来指定这两个坐标是相对于被引用窗口的 left,bottom 的值-->
+		<window pos ="sib.left@999:100, sib.bottom@999:10, @100, @25" colorBkgnd="#008546">
+		</window> <!--草绿-->
+	</root>
+</SOUI>
+```
+
+### 注册
+- 在 **uires.idx** <LAYOUT>节点下做页面的索引
+```xml
+<LAYOUT>
+	<file name="XML_MAINWND" path="xml\dlg_main.xml" />
+	<file name="XML_LAYOUT_TEST" path="xml\layoutTest.xml" />
+</LAYOUT>
+```
+
+### 加载xml
+- 新建一个加载该布局资源的类
+`CLayoutTestWnd.h`【为了方便演示 代码全写头文件里了】
+```c++
+#pragma once
+#include "stdafx.h"
+
+class CLayoutTestWnd : public SHostWnd // 基类
+{
+public:
+	CLayoutTestWnd()
+		: SHostWnd(_T("LAYOUT:XML_LAYOUT_TEST")) //这里定义主界面需要使用的布局文件
+	{
+		m_bLayoutInited = FALSE;
+	}
+	void OnClose()
+	{
+		PostMessage(WM_QUIT);
+	}
+	void OnMaximize()
+	{
+		SendMessage(WM_SYSCOMMAND, SC_MAXIMIZE);
+	}
+	void OnRestore()
+	{
+		SendMessage(WM_SYSCOMMAND, SC_RESTORE);
+	}
+	void OnMinimize()
+	{
+		SendMessage(WM_SYSCOMMAND, SC_MINIMIZE);
+	}
+	void OnSize(UINT nType, CSize size)
+	{
+		SetMsgHandled(FALSE);
+		if (!m_bLayoutInited) return;
+		if (nType == SIZE_MAXIMIZED)
+		{
+			FindChildByName(L"btn_restore")->SetVisible(TRUE);
+			FindChildByName(L"btn_max")->SetVisible(FALSE);
+		}
+		else if (nType == SIZE_RESTORED)
+		{
+			FindChildByName(L"btn_restore")->SetVisible(FALSE);
+			FindChildByName(L"btn_max")->SetVisible(TRUE);
+		}
+	}
+
+	BOOL OnInitDialog(HWND hWnd, LPARAM lParam)
+	{
+		m_bLayoutInited = TRUE;
+		return 0;
+	}
+protected:
+	//按钮事件处理映射表
+	EVENT_MAP_BEGIN()
+		EVENT_NAME_COMMAND(L"btn_close", OnClose)
+		EVENT_NAME_COMMAND(L"btn_min", OnMinimize)
+		EVENT_NAME_COMMAND(L"btn_max", OnMaximize)
+		EVENT_NAME_COMMAND(L"btn_restore", OnRestore)
+		EVENT_MAP_END()
+		//窗口消息处理映射表
+		BEGIN_MSG_MAP_EX(CLayoutTestWnd)
+		MSG_WM_INITDIALOG(OnInitDialog)
+		MSG_WM_CLOSE(OnClose)
+		MSG_WM_SIZE(OnSize)
+		CHAIN_MSG_MAP(SHostWnd)//注意将没有处理的消息交给基类处理
+		REFLECT_NOTIFICATIONS_EX()
+		END_MSG_MAP()
+private:
+	BOOL		 m_bLayoutInited;
+};
+
+```
+
+### 调用该类显示页面
+- 在主窗口中直接替换类 以展示该布局页面
+```c++
+CLayoutTestWnd wndMain;
+wndMain.Create(GetActiveWindow(), 0, 0, 800, 600);
+wndMain.SendMessage(WM_INITDIALOG);
+wndMain.CenterWindow(wndMain.m_hWnd);
+wndMain.ShowWindow(SW_SHOWNORMAL);
+nRet = theApp->Run(wndMain.m_hWnd);
+```
+- 运行得该窗口显示效果
+![示意图](./img/layoutWnd.png)
+
+## 模板布局
+- 方便复用某些通用页面 提供模板布局相关功能
+基础流程：新建模板布局 -> 注册模板布局 -> include引入主布局文件即可
+
+### 新建模板布局
+- 新建模板布局 `page_layout.xml`
+```xml
+<include>
+	<text pos="100,10" pos2type="center">center align1</text>
+	<text pos="100,30" pos2type="center">center align align</text>
+	<text pos="250,50" pos2type="rightTop">align right top</text>
+	<text pos="250,70" pos2type="rightTop">align right top 2</text>
+	<check pos="250,90" pos2type="rightTop">check right top</check>
+	<check pos="250,110" pos2type="rightTop" font="adding:-5">check right top1235</check>
+
+	<text pos="250,130" class="cls_txt_red">text left top</text>
+	<button pos="10,150,@150,@30">button 1 using @</button>
+	<button pos="10,200" width="150" height="30">button 1 using width</button>
+
+	<button name="btn_hidetst" pos="300,150,@100,@30" display="0" tip="click me to hide me and see how the next image will move">hide test</button>
+</include>
+```
+### 注册
+- `uires.idx`注册索引
+```xml
+<LAYOUT>
+	<file name="XML_MAINWND" path="xml\dlg_main.xml" />
+	<file name="XML_LAYOUT_TEST" path="xml\layoutTest.xml" />
+	<file name="XML_PAGE_LAYOUT" path="xml\page_layout.xml" /> <!--新增模板布局-->
+</LAYOUT>
+```
+
+### 引入
+- `layoutTest.xml` 引入该模板布局
+```xml
+	<include src="layout:XML_PAGE_LAYOUT">
+	</include>
+```
+![示意图](./img/layoutWndWithInclude.png)
+
+## 资源
+---
+在 MFC ，资源一般就是位图(Bitmap)，图标(Icon)，光标(Cursor)，对话框模板(Dialog)等资源。
+
+在 SOUI 中，资源主要变成了 XML 布局和 PNG 图片文件
+## 一、资源系统的整体结构
+
+SOUI 的资源系统由三层组成：
+
+```
+uires.idx（资源索引入口 UI索引文件）
+    ↓
+IResProvider（资源提供者，负责从哪里读文件）
+    ↓
+SApplication（统一管理，对外提供查询 & 加载接口）
+```
+
+应用程序通过 `SApplication::AddResProvider()` 注册资源提供者，之后所有 XML/图片/皮肤等都通过这个统一体系来查找。
+
+---
+
+## 二、`uires.idx`：资源索引文件 【定义资源】
+
+`uires.idx` 是整个资源体系的**入口**，文件名**固定**。
+
+此文件中可以定义程序的全局配置、XML 文件、字体、图片、文字等资源
+
+**常用资源类型：**
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<resource>
+  <!-- 全局UI定义（必须有，且唯一） -->
+  <UIDEF>
+    <file name="xml_init" path="xml\init.xml" />
+  </UIDEF>
+
+  <!-- 布局XML -->
+  <LAYOUT>
+    <file name="maindlg" path="xml\dlg_main.xml" />
+    <file name="page_layout" path="xml\page_layout.xml" />
+  </LAYOUT>
+
+  <!-- 图片资源（PNG/JPG/BMP等） -->
+  <IMGX>
+    <file name="png_page_icons" path="image\page_icons.png" />
+    <file name="png_btn_close"  path="image\btn_close.png" />
+  </IMGX>
+
+  <!-- 图标 -->
+  <ICON>
+    <file name="LOGO" path="image\logo.ico" />
+  </ICON>
+
+  <!-- 光标 -->
+  <CURSOR>
+    <file name="ANI_ARROW" path="image\arrow.ani" />
+  </CURSOR>
+
+  <!-- GIF 动画 -->
+  <GIF>
+    <file name="gif_loading" path="image\loading.gif" />
+  </GIF>
+
+  <!-- Lua 脚本 -->
+  <script>
+    <file name="lua_test" path="lua\test.lua" />
+  </script>
+
+  <!-- 多语言翻译文件 -->
+  <translator>
+    <file name="lang_cn" path="translation files\lang_cn.xml" />
+  </translator>
+</resource>
+```
+
+- 以`<resource>`为根节点。
+- 资源类型名可以**自定义**（任意字母，长度 ≤ 30 字符）
+- `UIDEF` 是唯一**有特殊语义**的类型（用于 `theApp->Init()`）
+- 每个 `<file>` 的 `name` 是**逻辑名**（用于在XML中进行引用），`path` 是实际文件路径
+- **资源引用语法**：`类型名:逻辑名`，如 `imgx:png_page_icons`
+---
+
+## 三、`init.xml`（UIDEF）【定义变量】
+```
+uires.idx
+  ├── UIDEF → init.xml    ← init.xml 是 uires 里的一个条目
+  ├── IMGX  → png_btn_close.png
+  └── LAYOUT → dlg_main.xml
+
+init.xml 内部：
+  <skin>
+    <imglist name="skin_btn" src="imgx:png_btn_close"/>
+                                   ↑
+                         引用的是 uires.idx 里 IMGX 段的 name
+  </skin>
+```
+
+`init.xml` 是全局 UI 定义文件，根节点固定为 `<UIDEF>`，且为唯一根节点
+
+`UIDEF` 下可定义可以定义 **font**，**string**，**skins**，**style**，**objattr** 五个子节点
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<UIDEF>
+	
+	<!--定义全局字体对象-->
+	<font face="宋体" size="15"/>
+	
+	<!--定义全局string替换对象-->
+	<string>
+		<mainTitle value="title ver:1.0"/>
+	</string>
+
+	<!--定义全局style 控件显式属性-->
+	<style>
+		<class name="normalbtn" font="" colorText="#385e8b" colorTextDisable="#91a7c0" textMode="25" cursor="hand" margin-x="0"/>
+		<class name="boldSongText" font="face:宋体,bold:5" checked ="1"/>	<!--不支持的属性会被静默忽略，不会报错也不会崩溃。-->
+	</style>
+
+	<!--定义全局objattr 控件默认继承属性-->
+	<objattr>
+		<text colorText="#385e8b" />
+	</objattr>
+
+	<!--定义全局skin对象-->
+	<!--<skin src="values:skin"/>-->
+</UIDEF>
+
+```
+- `font` 定义 SOUI 中使用的默认字体，只有 face 和 size 两个属性。
+- `string` 是一个字符串表，定义一个"name-字符串"映射，在布局的 XML 文件中可以通过
+引用字符串的 name 来获得字符串。
+- `skins` 定义 SOUI 中使用的全局窗口元素绘制对象，每一个对象都对应一个
+SOUI::ISkinObj 的派生类。
+- `style` 定义 UI 布局中 SOUI 窗口对象的属性集合，它们是 SWindow 对象的属
+性，所有 SWindow 对象都可以通过 class 属性来引用 style 节点中定义的属性集合。
+- `objattr` 控件的默认属性。 SOUI 可以为每一类 UI 控件通过 objattr 来提供一种默认属性集合，以减少在 XML 布局中的重复定义
+
+### 3.1 `<font>`：全局默认字体
+
+```xml
+<font face="微软雅黑" size="18"/>
+```
+只有 `face` 和 `size` 两个属性，影响所有没有单独指定字体的控件。全局生效，是所有控件没有单独指定字体时的兜底。
+
+#### 3.1.1 系统已安装的字体
+- `face` 直接写字体名即可，只要用户系统里装了就能用，担如果系统中没有则会回退至系统默认字体：
+
+```xml
+<font face="微软雅黑" size="16"/>
+<font face="Arial" size="16"/>
+```
+
+---
+
+#### 3.1.2 嵌入自定义字体文件
+
+把字体文件（`.ttf` / `.otf`）放进资源里，程序启动时注册，之后就可以像系统字体一样用 `face` 引用：
+
+**在 `uires.idx` 里注册字体资源：**
+```xml
+<font>
+    <file name="font_my" path="font\MyFont.ttf"/>
+</font>
+```
+
+**在代码里加载（`theApp->Init()` 之前）：**
+
+```cpp
+// SOUI 提供了加载私有字体的接口
+theApp->LoadSystemFont(/* 字体资源名 */);
+// 或者用 Win32 API 临时注册
+AddFontResourceEx(_T("font\\MyFont.ttf"), FR_PRIVATE, NULL);
+```
+
+加载后在 XML 里就能用字体文件里定义的字体名：
+```xml
+<font face="MyFont" size="16"/>
+```
+---
+
+### 3.2 `<string>`：字符串表
+
+```xml
+<string>
+    <mainTitle value="我的应用 v1.0"/>
+    <btnOk     value="确定"/>
+    <btnCancel value="取消"/>
+</string>
+```
+
+XML 中引用：`@string/mainTitle`  
+代码中引用：`GETSTRING(L"mainTitle")`（根据 SOUI 版本确认 API）
+
+### 3.3 `<style>`：样式类（CSS class 概念）
+
+定义可复用的控件属性集合，控件用 `class="xxx"` 引用：
+
+```xml
+<style>
+    <!-- 普通按钮样式 -->
+    <class name="normalbtn"
+           font=""
+           colorText="#385e8b"
+           colorTextDisable="#91a7c0"
+           textMode="25"
+           cursor="hand"
+           margin-x="0"/>
+
+    <!-- 链接样式 -->
+    <class name="cls_btn_link" cursor="hand" colorHover="#0A84D2"/>
+
+    <!-- 红色粗体文字 -->
+    <class name="cls_txt_red" font="face:宋体,bold:1" colorText="#FF0000"/>
+
+    <!-- 文字对齐预设 -->
+    <class name="centertext"      textMode="25"/>  <!-- 水平+垂直居中 -->
+    <class name="toptext"         textMode="20"/>  <!-- 水平居中，垂直顶对齐 -->
+    <class name="rightvcentertext" textMode="26"/> <!-- 右对齐，垂直居中 -->
+</style>
+```
+
+布局中使用：
+
+```xml
+<text class="cls_txt_red">红色文字</text>
+<button class="normalbtn">普通按钮</button>
+```
+
+`textMode` 是位标志，常见值（DT_* 标志组合）：
+- `20` = 水平居中 + 顶对齐
+- `25` = 水平居中 + 垂直居中
+- `22` = 右对齐 + 顶对齐
+- `26` = 右对齐 + 垂直居中
+
+### 3.4 `<objattr>`：控件默认属性
+
+为某类控件提供**全局默认值**，所有该类控件自动继承，无需每次在 XML 里重复写：
+
+```xml
+<objattr>
+    <!-- 所有 button 默认应用 normalbtn 样式 -->
+    <button class="normalbtn"/>
+    <!-- 所有 imgbtn 默认 cursor=hand -->
+    <imgbtn class="linkimage"/>
+    <!-- tabctrl 的全局默认外观 -->
+    <tabctrl colorText="000000" align="top" tabWidth="70" tabHeight="38" tabSpacing="0"/>
+    <!-- edit 默认透明背景和 margin -->
+    <edit transParent="1" margin-x="2" margin-y="2"/>
+    <!-- treectrl 默认颜色等 -->
+    <treectrl colorItemBkgnd="#FFFFFF" colorItemSelBkgnd="#000088"
+              colorItemText="#000000" colorItemSelText="#FFFFFF" indent="17"/>
+</objattr>
+```
+
+- style 是显式引用：你定义一个属性包，控件在 XML 里写 class="xxx" 才会应用，不写就不生效。相当于"我需要的时候主动去套这套衣服"。
+
+- objattr 是隐式继承：按控件类型自动应用，不需要 XML 里做任何声明，同类型的所有控件都默默带上了。相当于"出厂默认就穿这套"。
+
+**最简示例**
+`init.xml`
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<UIDEF>
+	
+	<!--定义全局字体对象-->
+	<font face="宋体" size="15"/>
+	
+	<!--定义全局string替换对象-->
+	<string>
+		<mainTitle value="title ver:1.0"/>
+	</string>
+
+	<!--定义全局style 控件显式属性-->
+	<style>
+		<class name="normalbtn" font="" colorText="#385e8b" colorTextDisable="#91a7c0" textMode="25" cursor="hand" margin-x="0"/>
+		<class name="boldSongText" font="face:宋体,bold:1" checked ="1"/>	<!--不支持的属性会被静默忽略，不会报错也不会崩溃。-->
+	</style>
+
+	<!--定义全局objattr 控件默认继承属性-->
+	<objattr>
+		<text colorText="#385e8b" />
+	</objattr>
+
+	<!--定义全局skin对象-->
+</UIDEF>
+
+```
+layoutTest.xml
+```xml
+	<text pos ="160, 400" class="boldSongText"> styleText </text>
+```
+![示意图](./img/textWithStyleAndObjattr.png)
+
+---
+### 3.5 `<skin>`：全局皮肤对象
+
+皮肤对象（`ISkinObj`）是 SOUI 的**绘图原语**，控件的外观都委托给皮肤来绘制。
+SOUI 系统默认实现了 六种绘图类型。
+- SSkinImgList(imglist), 
+- SSkinImgFrame(imgframe),
+- SSkinButton(button), 
+- SSkinGradation(gradation), 
+- SSkinScrollbar(scrollbar),
+- SSkinMenuBorder(border)
+
+#### `imglist`（图片列表皮肤）
+
+最常用。把一张图片水平/垂直切成 N 份，每份对应一个控件状态（正常/悬停/按下/禁用）：
+
+![示意图](./img/btn_round_1.png)
+```xml
+<imglist name="skin_btn_close" 
+         src="imgx:png_btn_close"    <!-- 引用 uires.idx 中的图片 -->
+         states="4"                  <!-- 子图数量 4 个状态：正常/悬停/按下/禁用 -->
+         tile="0"                    <!-- 0=拉伸（默认），1=平铺 -->
+         vertical="0"/>              <!-- 0=水平排列（默认），1=垂直排列 -->
+```
+
+状态顺序（`states=4` 时）：`Normal → Hover → PushDown → Disable`
+
+`uires.idx` 添加skin需要用到的img资源
+```xml
+<IMG>
+	<file name="btn_round_1" path="image\btn_round_1.png"/>
+</IMG>
+```
+
+`init.xml` 添加 skin 相关配置
+```xml
+<skin> <!--注意这里是 skin 不是 skins ，doc文件夹下的官方文档中此处有错-->
+	<imglist name="skin_btn_round" src="IMG:btn_round_1" states="4" tile="0" vertical="0"/>
+</skin>
+```
+
+`layoutTest.xml` 控件中使用相关skin
+```xml
+<window pos ="|20, |0, @90, @90" layout="hbox">
+		<button size="100,30" skin="skin_btn_round">按钮1</button> <!--套上imageList skin-->
+		<button size="100,30" extend_left="0">按钮2</button>
+		<button size="100,30" extend_left="10">按钮3</button>
+</window>
+```
+
+![示意图](./img/buttonWithImgListSkin.png)
+
+
+#### `imgframe`（九宫格皮肤）
+
+继承自 `imglist`，在其基础上增加九宫格拉伸控制，适合尺寸可变的背景：
+
+`init.xml`
+```xml
+<imgframe name="skin_btn_round_imgframe"
+		  src="IMG:btn_round_1"
+		  states="4" tile="0" vertical="0"
+		  left="10" top="10" right="10" bottom="10"/>
+```
+
+`layoutTest.xml`
+```xml 
+<button size="100,30" extend_left="0" skin="skin_btn_round_imgframe">按钮2</button>
+</window>
+```
+
+九宫格原理：四角固定不缩放，四边单方向缩放，中间双向缩放。
+![示意图](./img/nineGrid.png)
+![示意图](./img/nineGridLayout.png)
+
+
+#### `button`（渐变按钮皮肤）
+
+纯色渐变，不需要图片资源：
+
+`init.xml`
+```xml
+<button name="skin_my_btn"
+        colorBorder="#005564"
+        colorUp="#546315"      colorDown="#CCCCCC"       <!-- 正常状态：从上到下渐变 -->
+        colorUpHover="#FFFFFF" colorDownHover="#DDDDDD"  <!-- 悬停状态 -->
+        colorUpPush="#BBBBBB"  colorDownPush="#999999"   <!-- 按下状态 -->
+        colorUpDisable="#F0F0F0" colorDownDisable="#E0E0E0"/> <!-- 禁用状态 -->
+```
+![示意图](./img/skinColorButton.png)
+
+`layoutTest.xml`
+```xml 
+<button size="100,30" extend_left="10" skin="skin_my_btn">按钮3</button>
+```
+#### `gradation`（渐变背景皮肤）
+
+简单的背景渐变，只有两色：
+
+`init.xml`
+```xml
+<gradation name="skin_header_bg"
+           colorFrom="#4A90D9"
+           colorTo="#2065B0"
+           vertical="1"/>   <!-- 0=水平渐变，1=垂直渐变 -->
+```
+
+`layoutTest.xml`
+```xml 
+<window pos ="sib.left@999:100, sib.bottom@999:10, @100, @25" colorBkgnd="#008546" skin="skin_header_bg">
+</window>
+```
+![示意图](./img/gradationSkin.png)
+
+#### `scrollbar`（滚动条皮肤）
+
+专门给滚动条用，派生自 `imglist`，有自己独立的切片规则：
+
+```xml
+<scrollbar name="skin_scrollbar"
+           src="imgx:png_vscroll"
+           margin="8"
+           hasGripper="0"    <!-- 滑块上是否有中间的抓手图 -->
+           hasInactive="0"/> <!-- 是否有禁用态（增加一行网格） -->
+```
+
+图片规格：无 Gripper 无 Inactive = 8×3 网格；有 Gripper 则 X+1 列；有 Inactive 则 Y+1 行。
+
+![示意图](./img/ScrollBarSkin.png)
+
+## 四、`IResProvider`：资源提供者（在程序中从哪里加载）
+
+SOUI 内置三种加载方式，通过 `CreateResProvider()` 创建：
+
+| 类型常量 | 实现类 | 加载来源 | 适用场景 |
+|---------|--------|---------|---------|
+| `RES_FILE` | `SResProviderFiles` | 文件夹 | 开发调试 |
+| `RES_PE` | `SResProviderPE` | EXE/DLL 资源段 | 发布单文件程序 |
+| `RES_ZIP`（扩展） | `SResProviderZIP` | ZIP 压缩包 | 资源打包发布 |
+
+**三种方式的代码：**
+
+```cpp
+// 方式1：从文件夹加载（开发期常用）
+CreateResProvider(RES_FILE, (IObjRef**)&pResProvider);
+pResProvider->Init((LPARAM)_T("uires"), 0);  // "uires" 是文件夹名
+
+// 方式2：从 EXE 自身资源段加载
+CreateResProvider(RES_PE, (IObjRef**)&pResProvider);
+pResProvider->Init((WPARAM)hInstance, 0);
+
+// 方式3：从 ZIP 包加载（需要额外组件）
+pComMgr->CreateResProvider_ZIP((IObjRef**)&pResProvider);
+ZIPRES_PARAM param;
+param.ZipFile(pRenderFactory, _T("uires.zip"), "souizip");
+pResProvider->Init((WPARAM)&param, 0);
+```
+
+`AddResProvider` 可**多次调用**（叠加多个资源包），采用**后进先查**策略（后加的优先级高，可实现"皮肤覆盖"）。
+
+`程序启动初始化时一次性配置好的，写在 _tWinMain 里，之后整个程序运行期间基本就不管它了。`
+
+---
+
+## 五、系统资源 vs 用户资源
+
+SOUI 资源分为**两部分**：
+
+### 5.1 系统资源（`soui-sys-resource.dll`）
+
+内置了所有标准控件必须的皮肤，以 `_skin.sys.xxx` 命名，比如：
+
+| 系统皮肤名 | 用于 |
+|-----------|------|
+| `_skin.sys.wnd.bkgnd` | 窗口背景 |
+| `_skin.sys.btn.close` | 关闭按钮 |
+| `_skin.sys.btn.minimize` | 最小化按钮 |
+| `_skin.sys.btn.maximize` | 最大化按钮 |
+| `_skin.sys.btn.restore` | 还原按钮 |
+| `_skin.sys.btn.normal` | 普通按钮 |
+| `_skin.sys.checkbox` | 复选框 |
+| `_skin.sys.radio` | 单选框 |
+| `_skin.sys.scrollbar` | 滚动条 |
+| `_skin.sys.border` | 边框 |
+| `_skin.sys.prog.bar` | 进度条 |
+| `_skin.sys.slider.thumb` | 滑块 |
+| `_skin.sys.tree.toggle` | 树展开图标 |
+| `_skin.sys.tab.page` | Tab 页签 |
+
+加载方式：
+
+```cpp
+HMODULE hSysResource = LoadLibrary(SYS_NAMED_RESOURCE);  // "soui-sys-resourced.dll"
+if (hSysResource) {
+    CAutoRefPtr<IResProvider> sysSesProvider;
+    CreateResProvider(RES_PE, (IObjRef**)&sysSesProvider);
+    sysSesProvider->Init((WPARAM)hSysResource, 0);
+    theApp->LoadSystemNamedResource(sysSesProvider);  // 注意是LoadSystemNamedResource
+}
+```
+`也是写在 _tWinMain 里，最小demo中已经配好了`
+
+### 5.2 用户资源
+
+在 `uires.idx` 里自定义的一切皆为用户资源，命名不要以 `_skin.sys` 开头（避免冲突）。
+
+---
+
+## 六、局部皮肤 & 样式（窗口内定义）
+
+除了 `init.xml` 里的全局皮肤/样式，也可以在**单个布局 XML 的 `<SOUI>` 节点内**定义局部的：
+
+```xml
+<SOUI name="myWnd" ...>
+    <!-- 局部皮肤，只在本窗口有效，窗口销毁后释放 -->
+    <skin>
+        <imglist name="skin_local_btn" src="imgx:png_local" states="4"/>
+    </skin>
+    <!-- 局部样式 -->
+    <style>
+        <class name="local_style" colorText="#FF6600"/>
+    </style>
+    <root>
+        ...
+    </root>
+</SOUI>
+```
+
+注意：`include` 引入的子布局**不能**包含局部 `skin`/`style`。
+
+---
+
+## 七、整体流程
+
+```
+程序启动
+  ↓
+CreateResProvider(RES_FILE)  →  IResProvider（指向 uires/ 文件夹）
+  ↓
+theApp->AddResProvider()     →  注册到 SApplication
+  ↓
+加载系统资源 DLL              →  theApp->LoadSystemNamedResource()
+  ↓
+theApp->Init("xml_init")     →  解析 UIDEF，注册全局 font/string/skin/style/objattr
+  ↓
+SHostWnd("LAYOUT:XML_MAINWND") →  按需从资源里查找布局 XML，解析控件树
+  ↓
+控件需要皮肤时                →  按名查找已注册的 ISkinObj，调用 Draw()
+```
+
+这套体系的核心思路是：**用 `type:name` 二元组唯一标识一份资源，`IResProvider` 负责从不同介质（文件/PE/ZIP）拿到数据，`ISkinObj` 把图片数据变成可绘制的皮肤对象，布局 XML 通过名称引用皮肤/样式，做到数据与外观分离。**
+
+
+## 事件
+
+## SOUI 事件系统详解
+
+SOUI 的事件系统是 DirectUI 框架中控件与宿主之间通信的核心机制，完全不同于传统 Win32 的 `WM_COMMAND`/`WM_NOTIFY`。
+
+---
+
+### 一、整体架构
+
+```
+控件（SButton/SListCtrl 等）
+    ↓ 产生事件（FireEvent）
+EventSet（每个控件都有一个）
+    ↓ 冒泡传递（bubbleUp = true）
+宿主窗口（SHostWnd）
+    ↓ _HandleEvent() 分发
+EVENT_MAP 映射表 / subscribeEvent 订阅
+```
+
+控件发出事件时，事件对象会沿控件树**向上冒泡**，直到被某一层消费（`handled++`）或到达宿主窗口。
+
+---
+
+### 二、事件参数基类 `SEvtArgs`
+
+所有事件的参数类都继承自 `SEvtArgs`：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `sender` | `IObject*` | 发出事件的控件对象 |
+| `idFrom` | `int` | 发送者的 `id` 属性 |
+| `nameFrom` | `LPCWSTR` | 发送者的 `name` 属性 |
+| `handled` | `UINT` | 处理计数，`> 0` 表示已处理 |
+| `bubbleUp` | `BOOL` | 是否继续向父级冒泡 |
+
+处理函数中可通过 `pEvt->sender` 拿到原始控件指针，`pEvt->idFrom` / `pEvt->nameFrom` 做判断。
+
+---
+
+### 三、响应事件的两种方式
+
+#### 方式 1：EVENT_MAP 事件映射表（静态、编译期）
+
+在 `SHostWnd` 派生类的 `protected` 区域声明，类似 MFC 消息映射：
+
+```cpp
+EVENT_MAP_BEGIN()
+    EVENT_ID_COMMAND(SOUI::R.id.btn_ok,    OnBtnOk)      // 按 id 匹配 EVT_CMD
+    EVENT_NAME_COMMAND(L"btn_close",        OnBtnClose)   // 按 name 匹配 EVT_CMD
+    EVENT_NAME_CONTEXTMENU(L"edit_input",   OnEditMenu)   // 右键菜单
+    EVENT_HANDLER(EVT_TAB_SELCHANGED,       OnTabChanged) // 任意事件 by 事件ID
+EVENT_MAP_END()
+```
+
+`EVENT_MAP_BEGIN/END` 展开后就是 `_HandleEvent(SEvtArgs*)` 函数的实现，内部按顺序逐条匹配，匹配到则调用处理函数并返回 `TRUE`，未匹配则交给 `__super::_HandleEvent`。
+
+
+```c++
+void OnBtnMsgBox()
+{
+	CLayoutTestWnd* pWnd = new CLayoutTestWnd();
+	pWnd->Create(m_hWnd, 0, 0, 400, 300);  // 父窗口是当前窗口的 HWND
+	pWnd->CenterWindow(m_hWnd);
+	pWnd->ShowWindow(SW_SHOWNORMAL);
+}
+EVENT_MAP_BEGIN()
+EVENT_NAME_COMMAND(L"btn_msgbox", OnBtnMsgBox)
+EVENT_MAP_END()
+```
+![示意图](./img/clickForChildWnd.png)
+
+常用匹配宏：
+
+| 宏 | 匹配条件 |
+|----|---------|
+| `EVENT_ID_COMMAND(id, fn)` | `sender->id == id` 且事件是 `EVT_CMD` |
+| `EVENT_NAME_COMMAND(name, fn)` | `sender->name == name` 且事件是 `EVT_CMD` |
+| `EVENT_ID_HANDLER(id, evtId, fn)` | 按 id + 任意事件类型 |
+| `EVENT_NAME_HANDLER(name, evtId, fn)` | 按 name + 任意事件类型 |
+| `EVENT_HANDLER(evtId, fn)` | 仅按事件类型匹配（所有同类事件都走） |
+| `EVENT_NAME_CONTEXTMENU(name, fn)` | `EVT_CTXMENU` 右键菜单 |
+
+#### 方式 2：subscribeEvent 事件订阅（动态、运行期）
+
+适合运行时动态创建的控件，或需要在非宿主类中处理事件：
+
+```cpp
+// 向表头订阅点击事件
+SListCtrl *pList = FindChildByName2<SListCtrl>(L"lc_test");
+SWindow   *pHeader = pList->GetWindow(GSW_FIRSTCHILD);
+pHeader->GetEventSet()->subscribeEvent(
+    EVT_HEADER_CLICK,
+    Subscriber(&CMainDlg::OnListHeaderClick, this)
+);
+
+// 处理函数（注意返回 bool）
+bool CMainDlg::OnListHeaderClick(EventArgs *pEvtBase)
+{
+    EventHeaderClick *pEvt = (EventHeaderClick*)pEvtBase;
+    int iClickedCol = pEvt->iItem;
+    // ...
+    return true; // true = 已处理，停止冒泡
+}
+```
+
+也可以用 lambda：
+
+```cpp
+pCtrl->GetEventSet()->subscribeEvent(EVT_CMD, [](EventArgs* p) -> bool {
+    // ...
+    return true;
+});
+```
+
+---
+
+### 四、内置事件类型全览
+
+来源：[soui4 SEvents.h](https://github.com/soui4/soui)
+
+#### 通用 / 基础窗口事件
+
+| 事件ID | 事件类 | 关键字段 | 说明 |
+|--------|--------|---------|------|
+| `EVT_CMD` | `EventCmd` | — | 按钮点击等命令事件（最常用）|
+| `EVT_CTXMENU` | `EventCtxMenu` | `pt`, `bCancel` | 右键菜单请求 |
+| `EVT_SETFOCUS` | `EventSetFocus` | `wndOld` | 获得焦点 |
+| `EVT_KILLFOCUS` | `EventKillFocus` | `wndFocus` | 失去焦点 |
+| `EVT_CREATE` | `EventSwndCreate` | — | 控件创建完成 |
+| `EVT_DESTROY` | `EventSwndDestroy` | — | 控件销毁 |
+| `EVT_SIZE` | `EventSwndSize` | `szWnd` | 尺寸变化 |
+| `EVT_POS` | `EventSwndPos` | `rcWnd` | 位置变化 |
+| `EVT_VISIBLECHANGED` | `EventSwndVisibleChanged` | `bVisible` | 可见性变化 |
+| `EVT_STATECHANGED` | `EventSwndStateChanged` | `dwOldState`, `dwNewState` | 状态变化（hover/press等）|
+| `EVT_MOUSE_CLICK` | `EventMouseClick` | `pt`, `clickId` | 鼠标点击（含左/右/中/双击）|
+| `EVT_MOUSE_HOVER` | `EventSwndMouseHover` | — | 鼠标悬停 |
+| `EVT_MOUSE_LEAVE` | `EventSwndMouseLeave` | — | 鼠标离开 |
+| `EVT_MOUSE_MOVE` | `EventSwndMouseMove` | `pt`, `nFlags` | 鼠标移动 |
+| `EVT_KEYDOWN` | `EventKeyDown` | `nChar`, `nFlags` | 键盘按下 |
+| `EVT_KEYUP` | `EventKeyUp` | `nChar`, `nFlags` | 键盘释放 |
+| `EVT_CHAR` | `EventChar` | `nChar` | 字符输入 |
+| `EVT_SCROLL` | `EventScroll` | `nSbCode`, `nPos`, `bVertical` | 滚动条 |
+| `EVT_TIMER` | `EventTimer` | `uID`, `uData` | 定时器触发 |
+
+#### Tab 控件（`STabCtrl`）
+
+| 事件ID | 事件类 | 关键字段 |
+|--------|--------|---------|
+| `EVT_TAB_SELCHANGING` | `EventTabSelChanging` | `uOldSel`, `uNewSel`, `bCancel`（可拦截）|
+| `EVT_TAB_SELCHANGED` | `EventTabSelChanged` | `uOldSel`, `uNewSel` |
+| `EVT_TAB_ITEMHOVER` | `EventTabItemHover` | `iHover` |
+| `EVT_TAB_ITEMLEAVE` | `EventTabItemLeave` | `iLeave` |
+
+#### 列表框（`SListBox`）
+
+| 事件ID | 事件类 | 关键字段 |
+|--------|--------|---------|
+| `EVT_LB_SELCHANGING` | `EventLBSelChanging` | `nNewSel`, `nOldSel`, `bCancel` |
+| `EVT_LB_SELCHANGED` | `EventLBSelChanged` | `nNewSel`, `nOldSel` |
+| `EVT_LB_DBCLICK` | `EventLBDbClick` | `nCurSel`, `pt` |
+| `EVT_LB_RCLICK` | `EventLBRClick` | `nCurSel`, `pt` |
+
+#### 列表控件（`SListCtrl`，带表头）
+
+| 事件ID | 事件类 | 关键字段 |
+|--------|--------|---------|
+| `EVT_LC_SELCHANGING` | `EventLCSelChanging` | `nNewSel`, `nOldSel`, `bCancel` |
+| `EVT_LC_SELCHANGED` | `EventLCSelChanged` | `nNewSel`, `nOldSel` |
+| `EVT_LC_DBCLICK` | `EventLCDbClick` | `nCurSel`, `pt` |
+| `EVT_LC_RCLICK` | `EventLCRClick` | `nCurSel`, `pt` |
+| `EVT_LC_ITEMDELETED` | `EventLCItemDeleted` | `nItem`, `dwData` |
+| `EVT_HEADER_CLICK` | `EventHeaderClick` | `iItem`（列索引）|
+| `EVT_HEADER_ITEMCHANGED` | `EventHeaderItemChanged` | `iItem`, `nWidth` |
+
+#### 树控件（`STreeCtrl`）
+
+| 事件ID | 事件类 | 关键字段 |
+|--------|--------|---------|
+| `EVT_TC_SELCHANGING` | `EventTCSelChanging` | `hOldSel`, `hNewSel`, `bCancel` |
+| `EVT_TC_SELCHANGED` | `EventTCSelChanged` | `hOldSel`, `hNewSel` |
+| `EVT_TC_EXPAND` | `EventTCExpand` | `hItem`, `bCollapsed` |
+| `EVT_TC_CHECKSTATE` | `EventTCCheckState` | `hItem`, `uCheckState` |
+| `EVT_TC_DBCLICK` | `EventTCDbClick` | `hItem`, `bCancel` |
+| `EVT_TC_RCLICK` | `EventTCRClick` | `pt`, `hItem` |
+
+#### 组合框（`SComboBox`）
+
+| 事件ID | 事件类 | 关键字段 |
+|--------|--------|---------|
+| `EVT_CB_SELCHANGE` | `EventCBSelChange` | `nCurSel` |
+| `EVT_CB_DROPDOWN` | `EventCBDropdown` | `pDropDown`, `strInput` |
+| `EVT_CB_BEFORE_CLOSEUP` | `EventCBBeforeCloseUp` | `bCloseBlock`（可阻止关闭）|
+
+#### 滑块（`SSliderBar`）
+
+| 事件ID | 事件类 | 关键字段 |
+|--------|--------|---------|
+| `EVT_SLIDER_POS` | `EventSliderPos` | `nPos`, `action`（DOWN/MOVING/UP）|
+
+#### ItemPanel 相关（列表视图中的子面板）
+
+| 事件ID | 说明 |
+|--------|------|
+| `EVT_ITEMPANEL_CLICK` | 面板左键单击 |
+| `EVT_ITEMPANEL_RCLICK` | 面板右键单击 |
+| `EVT_ITEMPANEL_DBCLICK` | 面板双击 |
+| `EVT_ITEMPANEL_HOVER` | 面板悬停 |
+| `EVT_ITEMPANEL_LEAVE` | 面板离开 |
+
+这类事件通过 `EVT_OFPANEL` 包装后冒泡，通常在 `getView` 中用 `subscribeEvent` 订阅。
+
+---
+
+### 五、事件分发（大型项目解耦）
+
+当 UI 有多个 Tab 页、每页逻辑独立时，可以将事件分发到不同的 handler 对象，避免主窗口的事件映射表过于臃肿：
+
+```cpp
+// 主窗口的事件映射表
+EVENT_MAP_BEGIN()
+    EVENT_NAME_COMMAND(L"btn_close", OnClose)
+    CHAIN_EVENT_MAP_MEMBER(m_pageOneHandler)   // 转发给第一个页面的处理器
+    CHAIN_EVENT_MAP_MEMBER(m_pageTwoHandler)   // 转发给第二个页面的处理器
+EVENT_MAP_END()
+```
+
+子处理器类（不继承 `SHostWnd`，可以是任意类）：
+
+```cpp
+class CPageOneHandler {
+public:
+    void OnInit(SWindow* pRoot) { m_pRoot = pRoot; }
+private:
+    void OnBtnSave() { /* ... */ }
+    void OnBtnLoad() { /* ... */ }
+
+    EVENT_MAP_BEGIN()
+        EVENT_CHECK_SENDER_ROOT(m_pRoot)  // 只处理本页面内的事件
+        EVENT_NAME_COMMAND(L"btn_save", OnBtnSave)
+        EVENT_NAME_COMMAND(L"btn_load", OnBtnLoad)
+    EVENT_MAP_BREAK()  // 注意：子处理器用 BREAK 而非 END
+
+    SWindow* m_pRoot = nullptr;
+};
+```
+
+`EVENT_MAP_END` vs `EVENT_MAP_BREAK`：
+- `EVENT_MAP_END`：未匹配时调用 `__super::_HandleEvent`（用于有基类的场景）
+- `EVENT_MAP_BREAK`：直接 `return FALSE`（用于独立 handler 类）
+
+---
+
+### 六、可拦截事件（bCancel）
+
+部分 `*Changing` 类事件（切换前触发）支持取消操作：
+
+```cpp
+bool OnTabSelChanging(EventArgs* pBase) {
+    EventTabSelChanging* pEvt = (EventTabSelChanging*)pBase;
+    if (/* 不允许切换 */) {
+        pEvt->bCancel = TRUE;  // 阻止切换
+    }
+    return true;
+}
+```
+
+支持 `bCancel` 的有：`EVT_TAB_SELCHANGING`、`EVT_LB_SELCHANGING`、`EVT_LC_SELCHANGING`、`EVT_TV_SELCHANGING`、`EVT_TC_SELCHANGING`、`EVT_TC_DBCLICK`、`EVT_CB_BEFORE_CLOSEUP` 等。
+
+---
+
+### 七、自定义事件
+
+给自定义控件添加事件：
+
+```cpp
+// 1. 在控件类中用 DEF_EVT_EXT 定义事件类
+DEF_EVT_EXT(EventMyCustom, EVT_EXTERNAL_BEGIN + 1, {
+    int nSomeData;
+    BOOL bSomeFlag;
+})
+
+// 2. 控件类注册事件
+class SMyControl : public SWindow {
+    void OnInitFinish() {
+        m_evtSet.addEvent(EVENTID(EventMyCustom));
+    }
+};
+
+// 3. 控件内触发
+EventMyCustom evt(this);
+evt.nSomeData = 42;
+FireEvent(evt);
+
+// 4. 宿主订阅（subscribeEvent 或 EVENT_HANDLER）
+pMyCtrl->GetEventSet()->subscribeEvent(
+    EventMyCustom::EventID,
+    Subscriber(&CMainDlg::OnMyCustomEvent, this)
+);
+```
+
+自定义事件 ID 应从 `EVT_EXTERNAL_BEGIN`（10000000）开始，避免与内置事件冲突。
+
+---
+
+### 八、两种方式选择建议
+
+| 场景 | 推荐方式 |
+|------|---------|
+| 按钮、菜单等固定控件的命令响应 | `EVENT_MAP` + `EVENT_NAME_COMMAND` |
+| 运行时动态创建的控件 | `subscribeEvent` |
+| 列表/树的选择变化、表头点击 | `subscribeEvent`（更清晰）|
+| 多 Tab 大型界面解耦 | `CHAIN_EVENT_MAP_MEMBER` |
+| Lua 脚本响应控件事件 | 只能用 `subscribeEvent` |
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# SOUI 笔记：`pos`、负值、`|0`、`offset` 示例
+## 示例 XML（标题栏 + 右上角关闭）
+
+```xml
+<window pos="0,0,-0,@24dp">
+  <text pos="[2dp,0,-0,-1" text="筛选器" />
+  <imgbtn id="IDCANCEL" pos="-27dp,|0" offset="0,-0.5"
+          drawFocusRect="0" skin="skin_svg_close_24"/>
+</window>
+```
+
+## `-27dp` 水平方向（靠右，不是从左边“伸出去”）
+
+- 第一个分量写成 **`-27dp`**：在 SOUI 里通常表示**相对父窗口右边界向内**约 27dp，用来把按钮放在**右侧**（如关闭键）。
+- **不是**从左边线往左画；从左边负出去才会像“从左边伸出窗口”。
+- 若写成 **`27dp`**（正数），一般是从**父窗口左缘**向右 27dp，按钮在**左侧**。
+
+## `|0` 垂直方向（相对谁居中？）
+
+- **`|`**：参考**父窗口**竖直方向的几何中心（见工程里 `POSFLAG_REFCENTER`、`PIT_CENTER`）。
+- **`|0`**：在该参考上再偏移 `0`，即**在父窗口里竖直居中**。
+- 上例中父窗口高度只有 **`@24dp`**，所以“居中”是**在这 24dp 高的标题条里**上下居中。
+- 这条标题条本身在整窗**顶部**，所以视觉上仍是**整窗的右上角区域**；若父窗口是铺满客户区的大窗，`|0` 就会在**整块客户区**竖直正中。
+
+## `offset="0,-0.5"`（在 `pos` 算完之后再平移）
+
+工程注释（`SouiLayoutParamStruct`）含义可记为：
+
+- 布局矩形按 `pos`（及宽高）算完后：
+  - **水平**：`x += offsetX × 自身宽度`
+  - **竖直**：`y += offsetY × 自身高度`
+- **`0,-0.5`**：水平不动；向上再移 **0.5 倍自身高度**，常和 `|0` 一起微调图标的**视觉居中**。
+
+## 一句话对照
+
+| 写法 | 直观理解 |
+|------|-----------|
+| `-27dp`（水平） | 靠右，距右缘约 27dp |
+| `|0`（垂直） | 在**直接父窗口**内竖直居中 |
+| `offset="0,-0.5"` | 再向上移半个自身高度 |
+
+
+
+
+SOUI 里通常用 <caption> 包住可拖动区域（一般是标题条），系统在 caption 上会走“模拟标题栏”的逻辑，用来拖动整个宿主窗
+
+在最外层 <SOUI ...> 上打开可调尺寸即可，你们工程里已经这么用：
+
+resizable="1"：允许通过边框拖拽改变窗口大小。
+你的 dlg_filters.xml 第 1 行里已经有 resizable="1"。
+
+原因说明（以你们自带的 SOUI 头文件为准）
+在 SHostWnd.h 里，根节点属性对应的成员注释写得很清楚：
+
+
+SHostWnd.h
+Lines 119-119
+		SLayoutSize m_rcMargin[4];       //窗口拉伸的边缘检测大小
+也就是说：margin 四个边不仅是“留白”，还是“窗口拉伸时，在边缘多宽范围内算作可拖拽缩放”的检测带。
+若根上没写 margin，默认往往是 0，可缩放区域宽度为 0，鼠标在视觉上贴着白边也命不中缩放逻辑，表现就是 resizable="1" 开了却拖不动。
+
+# SOUI：TreeView + Adapter 用法笔记
+
+## 1. 整体关系
+
+| 部分 | 作用 |
+|------|------|
+| XML `<treeview>` | 定义树控件，内含 `<template>` 作为**每一行**的子布局 |
+| `STreeAdapterBase<T>` | 在内存里维护逻辑树，每个节点挂一个类型为 **`T`** 的数据 |
+| `getView` | 把节点数据 `T` 填到该行对应的 `SWindow`（文字、勾选等） |
+| `InsertItem` / `DeleteAllItems` / `notifyBranchChanged` | 修改数据后通知 `STreeView` 刷新 |
+| 对话框代码 | `FindChildByID2<STreeView>(SOUI::R.id.xxx)` → `SetAdapter(adapter)` |
+---
+
+## 2. XML 要点
+
+- 使用 **`<treeview>`**，内部提供 **`<template>...</template>`**。
+- 模板内控件用 **`name`**（或项目约定的 `id`），与 **`SOUI::R.id.xxx`** 一致。
+- **`name` 会参与生成 `R.id`**：例如 `name="filterTree"` → 代码里 `SOUI::R.id.filterTree`（需重新编译 UI 资源）。
+- 不需要再套一层 MFC 的 `IDC_` 数字 id；**`name` 即逻辑 id**。
+
+## 3. 节点数据类型 `T`
+
+为每个节点定义一个 POD/结构体，挂在 `STreeAdapterBase<T>` 的 `ItemInfo::data` 上，例如（楼层树示例）：
+
+```cpp
+struct FloorsTreeItemData {
+    bool bGroup{ true };
+    SOUI::Check3State sCheck{ SOUI::Check3State::C3S_normal };
+    tstring strName;
+    storey_guid_t strGuid;
+};
+```
+
+业务不同则换字段（如指向业务节点指针、是否分组等）。
+
+## 4. 自定义 Adapter
+
+```cpp
+class CMyTreeAdapter : public SOUI::STreeAdapterBase<MyItemData>
+{
+public:
+    void RebuildTree();  // 内部：清空 + InsertItem + notify
+    void getView(SOUI::HTREEITEM loc, SOUI::SWindow* pItem,
+                 SOUI::pugi::xml_node xmlTemplate) override;
+};
+```
+
+## 5. 建树与刷新（典型流程）
+
+1. `m_tree.DeleteAllItems();`
+2. `notifyBranchChanged(ITEM_ROOT);`（与项目现有写法一致即可）
+3. 根节点：`HSTREEITEM h = InsertItem(data, false);`，需要时 `ExpandItem(h, SOUI::ITvAdapter::TVC_EXPAND);`
+4. 子节点：`InsertItem(childData, false, hParent);` 递归
+5. 最后再 `notifyBranchChanged(ITEM_ROOT);` 刷新界面
+
+说明：
+
+- **`InsertItem`** 签名大意：`InsertItem(const T& data, bool bAutoSortRowIndex, HSTREEITEM hParent = STVI_ROOT, ...)`
+- 取节点数据：`m_tree.GetItemPt(hItem)` → `->data`（类型为 `T`）
+- 根相关：使用基类中的 **`ITEM_ROOT` / `STVI_ROOT`**（与 `STreeAdapterBase` 一致）
+
+## 6. `getView`：绑定一行 UI
+
+- 若 `pItem` 尚无子窗口：`pItem->InitFromXml(xmlTemplate);`
+- `auto pii = m_tree.GetItemPt((HSTREEITEM)loc);`，用 `pii->data` 更新文案、勾选等
+- 子控件：`pItem->FindChildByID2<...>(SOUI::R.id.xxx)`
+- 交互：`pCheck->GetEventSet()->subscribeEvent(SOUI::EVT_CMD, Subscriber(&CMyTreeAdapter::OnXxx, this));`
+- 在事件里通过 **`SItemPanel::GetItemIndex()`** 得到当前 **`HTREEITEM`**，改 `m_tree.GetItemPt(...)->data`，再 **`notifyBranchChanged(ITEM_ROOT)`**（按需）
+
+## 7. 对话框里挂载
+
+```cpp
+BOOL CMyDlg::OnInitDialog(HWND wndFocus, LPARAM lInitParam)
+{
+    auto* pTree = FindChildByID2<SOUI::STreeView>(SOUI::R.id.filterTree);
+    if (pTree)
+    {
+        m_pAdapter = new CMyTreeAdapter(/* 业务数据根指针 */);
+        m_pAdapter->RebuildTree();
+        pTree->SetAdapter(m_pAdapter);
+    }
+    return TRUE;
+}
+```
+
+注意：**`R.id` 必须与当前布局 XML 里该控件的 `name` 对应**，不要用别的界面里的名字（例如楼层里的 `floorsTree`）。
+
+## 8. 生命周期
+
+- Adapter 多为引用计数；若 `new` 后需要释放，析构里可 **`m_pAdapter->Release()`**（与 `CLbFloorSelectDlg` 一致），避免泄漏。
+
+## 9. 与 MFC `CTreeCtrl` 的对应
+
+| MFC | SOUI |
+|-----|------|
+| `InsertItem` + `SetItemData` | `InsertItem(T{...}, false, parent)`，数据在 `T` 里 |
+| `DeleteAllItems` | `m_tree.DeleteAllItems()` + `notifyBranchChanged` |
+| `GetItemData` / 遍历 | `GetItemPt(h)->data` + 基类提供的父子/兄弟遍历 |
+| 通知消息 | `getView` 内 `subscribeEvent` 或 XML 事件 |
+
+## 10. 与「可缩放窗口」相关（同项目经验）
+
+- 根节点 **`resizable="1"`** 时，常需配合非零 **`margin`**，否则边缘拖拽区域过窄（`margin` 在 `SHostWndAttr` 里注释为拉伸边缘检测宽度）。
+
+
+
+# mfc转soui时 event区分
+
+## 1. 放在 `BEGIN_MSG_MAP_EX`（以及 `MESSAGE_HANDLER` / `MSG_WM_*`）里
+
+处理的是 **Windows 消息**：发给**窗口 HWND** 的 `WM_*`，以及你们自己封装的**自定义消息**。
+
+典型来源：
+
+- 原来 MFC 里 **`ON_WM_*`**：`ON_WM_SIZE`、`ON_WM_PAINT`、`ON_WM_TIMER` 等  
+- **`ON_MESSAGE(WM_xxx, ...)`**：例如你们的 `WM_ACAD_KEEPFOCUS`  
+- **对话框生命周期**：原来 `OnInitDialog` → SOUI 里对应 **`MSG_WM_INITDIALOG(OnInitDialog)`**（仍是对话框的 Win32 消息）  
+- **与 AutoCAD / MFC 宿主、焦点、非客户区**等相关的，只要文档里说是 **window message**，都走这条线  
+
+一句话：**只要本质是「这个 HWND 收到的 Win32 消息」→ 用消息映射。**
+
+---
+
+## 2. 放在 `EVENT_MAP_BEGIN` 里
+
+处理的是 **SOUI 控件自己的事件**，走 **SOUI 的 EventSet**（`EVT_CMD`、`EVT_CLICK` 等），**不是**传统子控件 `WM_COMMAND` 经 MFC 路由那种路径。
+
+典型对应关系：
+
+- 原来 **`ON_BN_CLICKED`**、**`ON_COMMAND`** 绑的是 **对话框上的资源 ID**，在 MFC 里最终会到 **`WM_COMMAND`**；  
+  转成 SOUI 后，若按钮是 **`SOUI::SButton`** 等，一般应绑 **`EVENT_ID_COMMAND(SOUI::R.id.xxx, ...)`**（或名称映射），因为点击是由 SOUI 在内部转成 **EVT_CMD** 再分发的。  
+- **树、列表、自定义皮肤控件**里子控件的交互，若在 SOUI 里用 **EVENT_MAP** / **subscribeEvent** 那一套，也属于这一类。
+
+一句话：**「SOUI 控件通过 name/id 和 EventSet 发出来的事」→ 用 `EVENT_MAP`。**
+
+---
+
+## 3. 实用判断流程（迁移时怎么用）
+
+| 问题 | 更可能放哪 |
+|------|------------|
+| MFC 里是 `ON_MESSAGE` / `ON_WM_*` / 自定义 `WM_`？ | **`BEGIN_MSG_MAP_EX`** |
+| 和**整个对话框窗口**行为有关（初始化、尺寸、焦点策略）？ | **消息映射** |
+| 是 **SOUI XML 里某个控件的 id/name** 的点击、命令？ | **`EVENT_MAP_BEGIN`** |
+| 你在 **C++ 里 `subscribeEvent(EVT_CMD, ...)`** 已经能收到？ | 和 **EVENT_MAP 是同一条 SOUI 事件体系**；二选一或配合使用 |
+
+---
+
+## 4. 和「原来 MFC 绑定」的对应关系（避免混淆）
+
+- **ON_BN_CLICKED(某个 IDC)**：在 SOUI 里通常**不是**再写一个 `ON_BN_CLICKED`，而是 **`EVENT_ID_COMMAND(SOUI::R.id.xxx, ...)`**（前提是布局里该按钮的 **name 能解析到 R.id**）。  
+- **ON_NOTIFY(TVN_*, ...)**：树若换成 **`STreeView` + Adapter**，往往变成 **Adapter 里 `getView` / `subscribeEvent`** 或树相关 **EVENT**，而不是原来的 `TVN_*` 通知；这是控件模型变了，要按 SOUI 文档/示例来，不能 1:1 照搬 `ON_NOTIFY`。
+
+---
+
+## 5. 简短结论
+
+- **`BEGIN_MSG_MAP_EX`**：**窗口级**、**Win32 消息**、与宿主（CAD）交互、生命周期。  
+- **`EVENT_MAP_BEGIN`**：**SOUI 控件**通过 **R.id / name** 触发的**高层事件**（最常见是按钮「确定」「取消」等）。
+
+若你贴一段**具体 MFC 消息映射**（几行即可），可以按行说明迁移后应落在哪一侧。
