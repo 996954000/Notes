@@ -1,0 +1,117 @@
+# SOUI 笔记：`pos`、负值、`|0`、`offset` 示例
+## 示例 XML（标题栏 + 右上角关闭）
+
+```xml
+<window pos="0,0,-0,@24dp">
+  <text pos="[2dp,0,-0,-1" text="筛选器" />
+  <imgbtn id="IDCANCEL" pos="-27dp,|0" offset="0,-0.5"
+          drawFocusRect="0" skin="skin_svg_close_24"/>
+</window>
+```
+
+## `-27dp` 水平方向（靠右，不是从左边“伸出去”）
+
+- 第一个分量写成 **`-27dp`**：在 SOUI 里通常表示**相对父窗口右边界向内**约 27dp，用来把按钮放在**右侧**（如关闭键）。
+- **不是**从左边线往左画；从左边负出去才会像“从左边伸出窗口”。
+- 若写成 **`27dp`**（正数），一般是从**父窗口左缘**向右 27dp，按钮在**左侧**。
+
+## `|0` 垂直方向（相对谁居中？）
+
+- **`|`**：参考**父窗口**竖直方向的几何中心（见工程里 `POSFLAG_REFCENTER`、`PIT_CENTER`）。
+- **`|0`**：在该参考上再偏移 `0`，即**在父窗口里竖直居中**。
+- 上例中父窗口高度只有 **`@24dp`**，所以“居中”是**在这 24dp 高的标题条里**上下居中。
+- 这条标题条本身在整窗**顶部**，所以视觉上仍是**整窗的右上角区域**；若父窗口是铺满客户区的大窗，`|0` 就会在**整块客户区**竖直正中。
+
+## `offset="0,-0.5"`（在 `pos` 算完之后再平移）
+
+工程注释（`SouiLayoutParamStruct`）含义可记为：
+
+- 布局矩形按 `pos`（及宽高）算完后：
+  - **水平**：`x += offsetX × 自身宽度`
+  - **竖直**：`y += offsetY × 自身高度`
+- **`0,-0.5`**：水平不动；向上再移 **0.5 倍自身高度**，常和 `|0` 一起微调图标的**视觉居中**。
+
+## 一句话对照
+
+| 写法 | 直观理解 |
+|------|-----------|
+| `-27dp`（水平） | 靠右，距右缘约 27dp |
+| `|0`（垂直） | 在**直接父窗口**内竖直居中 |
+| `offset="0,-0.5"` | 再向上移半个自身高度 |
+
+
+
+
+SOUI 里通常用 <caption> 包住可拖动区域（一般是标题条），系统在 caption 上会走“模拟标题栏”的逻辑，用来拖动整个宿主窗
+
+在最外层 <SOUI ...> 上打开可调尺寸即可，你们工程里已经这么用：
+
+resizable="1"：允许通过边框拖拽改变窗口大小。
+你的 dlg_filters.xml 第 1 行里已经有 resizable="1"。
+
+原因说明（以你们自带的 SOUI 头文件为准）
+在 SHostWnd.h 里，根节点属性对应的成员注释写得很清楚：
+
+
+SHostWnd.h
+Lines 119-119
+		SLayoutSize m_rcMargin[4];       //窗口拉伸的边缘检测大小
+也就是说：margin 四个边不仅是“留白”，还是“窗口拉伸时，在边缘多宽范围内算作可拖拽缩放”的检测带。
+若根上没写 margin，默认往往是 0，可缩放区域宽度为 0，鼠标在视觉上贴着白边也命不中缩放逻辑，表现就是 resizable="1" 开了却拖不动。
+
+
+# mfc转soui时 event区分
+
+## 1. 放在 `BEGIN_MSG_MAP_EX`（以及 `MESSAGE_HANDLER` / `MSG_WM_*`）里
+
+处理的是 **Windows 消息**：发给**窗口 HWND** 的 `WM_*`，以及你们自己封装的**自定义消息**。
+
+典型来源：
+
+- 原来 MFC 里 **`ON_WM_*`**：`ON_WM_SIZE`、`ON_WM_PAINT`、`ON_WM_TIMER` 等  
+- **`ON_MESSAGE(WM_xxx, ...)`**：例如你们的 `WM_ACAD_KEEPFOCUS`  
+- **对话框生命周期**：原来 `OnInitDialog` → SOUI 里对应 **`MSG_WM_INITDIALOG(OnInitDialog)`**（仍是对话框的 Win32 消息）  
+- **与 AutoCAD / MFC 宿主、焦点、非客户区**等相关的，只要文档里说是 **window message**，都走这条线  
+
+一句话：**只要本质是「这个 HWND 收到的 Win32 消息」→ 用消息映射。**
+
+---
+
+## 2. 放在 `EVENT_MAP_BEGIN` 里
+
+处理的是 **SOUI 控件自己的事件**，走 **SOUI 的 EventSet**（`EVT_CMD`、`EVT_CLICK` 等），**不是**传统子控件 `WM_COMMAND` 经 MFC 路由那种路径。
+
+典型对应关系：
+
+- 原来 **`ON_BN_CLICKED`**、**`ON_COMMAND`** 绑的是 **对话框上的资源 ID**，在 MFC 里最终会到 **`WM_COMMAND`**；  
+  转成 SOUI 后，若按钮是 **`SOUI::SButton`** 等，一般应绑 **`EVENT_ID_COMMAND(SOUI::R.id.xxx, ...)`**（或名称映射），因为点击是由 SOUI 在内部转成 **EVT_CMD** 再分发的。  
+- **树、列表、自定义皮肤控件**里子控件的交互，若在 SOUI 里用 **EVENT_MAP** / **subscribeEvent** 那一套，也属于这一类。
+
+一句话：**「SOUI 控件通过 name/id 和 EventSet 发出来的事」→ 用 `EVENT_MAP`。**
+
+---
+
+## 3. 实用判断流程（迁移时怎么用）
+
+| 问题 | 更可能放哪 |
+|------|------------|
+| MFC 里是 `ON_MESSAGE` / `ON_WM_*` / 自定义 `WM_`？ | **`BEGIN_MSG_MAP_EX`** |
+| 和**整个对话框窗口**行为有关（初始化、尺寸、焦点策略）？ | **消息映射** |
+| 是 **SOUI XML 里某个控件的 id/name** 的点击、命令？ | **`EVENT_MAP_BEGIN`** |
+| 你在 **C++ 里 `subscribeEvent(EVT_CMD, ...)`** 已经能收到？ | 和 **EVENT_MAP 是同一条 SOUI 事件体系**；二选一或配合使用 |
+
+---
+
+## 4. 和「原来 MFC 绑定」的对应关系（避免混淆）
+
+- **ON_BN_CLICKED(某个 IDC)**：在 SOUI 里通常**不是**再写一个 `ON_BN_CLICKED`，而是 **`EVENT_ID_COMMAND(SOUI::R.id.xxx, ...)`**（前提是布局里该按钮的 **name 能解析到 R.id**）。  
+- **ON_NOTIFY(TVN_*, ...)**：树若换成 **`STreeView` + Adapter**，往往变成 **Adapter 里 `getView` / `subscribeEvent`** 或树相关 **EVENT**，而不是原来的 `TVN_*` 通知；这是控件模型变了，要按 SOUI 文档/示例来，不能 1:1 照搬 `ON_NOTIFY`。
+
+---
+
+## 5. 简短结论
+
+- **`BEGIN_MSG_MAP_EX`**：**窗口级**、**Win32 消息**、与宿主（CAD）交互、生命周期。  
+- **`EVENT_MAP_BEGIN`**：**SOUI 控件**通过 **R.id / name** 触发的**高层事件**（最常见是按钮「确定」「取消」等）。
+
+若你贴一段**具体 MFC 消息映射**（几行即可），可以按行说明迁移后应落在哪一侧。

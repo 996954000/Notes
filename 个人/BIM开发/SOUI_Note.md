@@ -3,6 +3,44 @@
 - DirectUI是一个UI思路，即少量真实 HWND（通常一个宿主窗口）+ 大量逻辑控件。  
 - MFC/传统 Win32 常见是一控件一 HWND；而 DirectUI 的按钮、列表项等多为“逻辑控件”，没有各自独立 HWND。输入消息先到宿主 HWND（如鼠标/键盘），框架再做命中测试与事件分发，判断哪个逻辑控件被点到。控件外观也由框架使用GDI/Direct2D/Skia等进行自绘。 
 
+
+
+**HWND** 是 Windows 程序里常见的一种类型名，一般写作 `HWND`，含义可以理解为：**窗口句柄（Handle to a Window）**。
+
+- 在 Win32 里，**句柄**是系统给的一个“编号/引用”，用来在 API 里指代某个由系统创建的对象
+- **HWND** 专门用来标识**某一个窗口**（可以是主窗口、子控件窗口、对话框等，在系统里很多 UI 元素本质上都是“窗口”）。
+
+有了 HWND，程序才能确定操作的是哪一个窗口，例如：
+
+- **发消息**：`SendMessage(hwnd, ...)`、`PostMessage(hwnd, ...)`
+- **改标题、取标题**：`SetWindowText`、`GetWindowText`
+- **显示/隐藏、启用/禁用**：`ShowWindow`、`EnableWindow`
+- **改位置大小**：`SetWindowPos`、`MoveWindow`
+- **子控件**：按钮、编辑框等也常有自己的 HWND，父窗口用 `GetDlgItem` 等拿到子控件的 HWND 再操作
+
+ **DirectUI** 则是一种 UI 思路：**尽量用很少的 `HWND`（常常就 1 个宿主窗口），在窗口客户区里自己画、自己算命中、自己分发消息**，而不是像传统 Win32 那样“一个控件一个子窗口句柄”。
+
+在经典模型里，**按钮、编辑框、列表框**等往往是 **真正的子窗口**（各自有 `HWND`），系统会为它们：
+
+- 单独维护一套窗口过程（`WndProc`）与默认绘制  
+- 单独做焦点、键盘 Tab、IME、无障碍等桥接  
+- 产生更多窗口消息与 HWND 管理成本  
+
+很多行为系统已经实现了，但 **HWND 数量一多**，成本与限制也更明显。
+
+DirectUI **不把每个控件都做成独立 `HWND`**
+
+1. **一个（或少量）宿主 `HWND`**：负责接收鼠标键盘、定时器、DPI、窗口移动缩放等“窗口级”事件。  
+2. **控件是逻辑对象**：在内存里一棵树（element / control），自己 `HitTest`、自己 `OnPaint`（GDI+/D2D/Skia 等），自己维护状态。  
+3. **绘制走自绘管线**：更像游戏/UI 框架的一帧一帧绘制，而不是让每个子 HWND 各自 `WM_PAINT`。
+
+这样做的常见动机包括：
+
+- **HWND 少了**：消息路由、同步焦点、子窗口裁剪/重绘连锁、DWM 合成下的边角问题，往往更可控。  
+- **外观自由度更高**：不规则形状、复杂动画、统一换肤、叠层布局，不必被“每个控件都是真窗口”的默认行为绑住。  
+- **性能与扩展策略**：大量小控件时，减少系统窗口对象数量；绘制可以批处理/缓存（当然也取决于实现）。
+
+
 | 维度 | 传统 Win32 | DirectUI（窗口化/无子控件自绘） |
 |------|------------|--------------------------------|
 | **窗口与消息** | 大量 `HWND` 子控件，消息在窗口树里分发（`WM_*` 等） | 通常少量顶层窗口，内部多为“逻辑控件”，消息在框架内路由 |
@@ -88,6 +126,22 @@ https://github.com/setoutsoft/soui
   - utilitiesd.lib
   - souid.lib
 ![示意图](./img/extraLib.png)
+
+### 头文件目录（编译用）
+
+| 路径 | 职责 |
+|------|----------|
+| `extra_lib\config` | 放 **`core-def.h` / `com-def.h` / `build.cfg`** 这类由工程生成或随库带的 **编译开关、版本与公共宏**；决定 SOUI 按什么能力/选项参与编译。 |
+| `extra_lib\utilities\include` | 放 **`utilities` 库的对外头文件**；里面是字符串、辅助类等 **基础工具 API 的声明**，SOUI 头文件会依赖到它。 |
+| `extra_lib\SOUI\include` | 放 **SOUI 主库对外头文件**（如 `souistd.h`、`core/`、`control/`）；**控件、宿主、资源、布局等 UI 框架 API** 的声明在这里。 |
+
+### 库目录与库文件（链接用）
+
+| 项 | 职责 |
+|----|----------|
+| `extra_lib\bin` | 放 **已经编好的 `.lib`（以及若有 DLL 时同目录的 `dll`）**；链接器来这里 **按文件名找磁盘上的库文件**。 |
+| `utilitiesd.lib` | **`utilities` 的实现**：把工具层里 **已编译好的函数/类** 链进exe；。 |
+| `souid.lib` | **`soui` 主库的实现**（Debug）：把 **DirectUI 框架主体** 链进 exe； |
 
 ### 准备SOUI的程序资源
 | 文件名 | 是否固定文件名 | 作用说明 | 备注 |
@@ -196,6 +250,17 @@ uires/
 #include <control/souictrls.h>
 
 using namespace SOUI;
+```
+
+### targetver.h 定义 Windows 版本
+```c++
+#pragma once
+
+// // 包含 SDKDDKVer.h 可定义可用的最高版本的 Windows 平台。
+// 如果希望为之前的 Windows 平台构建应用程序，在包含 SDKDDKVer.h 之前请先包含 WinSDKVer.h 并
+// 将 _WIN32_WINNT 宏设置为想要支持的平台。
+#include <SDKDDKVer.h>
+
 ```
 
 ### SOUITemplate.cpp 应用程序入口 找 _tWinMain 为程序入口
@@ -2615,246 +2680,11 @@ SApplication::getSingleton().RegisterWndFactory(TplSWindowFactory<SMyCtrl>());
 
 之后即可在 XML 中使用 `<myctrl myValue="42" pos="0,0,100,30"/>`。
 
-## 消息机制
 
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# SOUI 笔记：`pos`、负值、`|0`、`offset` 示例
-## 示例 XML（标题栏 + 右上角关闭）
-
-```xml
-<window pos="0,0,-0,@24dp">
-  <text pos="[2dp,0,-0,-1" text="筛选器" />
-  <imgbtn id="IDCANCEL" pos="-27dp,|0" offset="0,-0.5"
-          drawFocusRect="0" skin="skin_svg_close_24"/>
-</window>
-```
-
-## `-27dp` 水平方向（靠右，不是从左边“伸出去”）
-
-- 第一个分量写成 **`-27dp`**：在 SOUI 里通常表示**相对父窗口右边界向内**约 27dp，用来把按钮放在**右侧**（如关闭键）。
-- **不是**从左边线往左画；从左边负出去才会像“从左边伸出窗口”。
-- 若写成 **`27dp`**（正数），一般是从**父窗口左缘**向右 27dp，按钮在**左侧**。
-
-## `|0` 垂直方向（相对谁居中？）
-
-- **`|`**：参考**父窗口**竖直方向的几何中心（见工程里 `POSFLAG_REFCENTER`、`PIT_CENTER`）。
-- **`|0`**：在该参考上再偏移 `0`，即**在父窗口里竖直居中**。
-- 上例中父窗口高度只有 **`@24dp`**，所以“居中”是**在这 24dp 高的标题条里**上下居中。
-- 这条标题条本身在整窗**顶部**，所以视觉上仍是**整窗的右上角区域**；若父窗口是铺满客户区的大窗，`|0` 就会在**整块客户区**竖直正中。
-
-## `offset="0,-0.5"`（在 `pos` 算完之后再平移）
-
-工程注释（`SouiLayoutParamStruct`）含义可记为：
-
-- 布局矩形按 `pos`（及宽高）算完后：
-  - **水平**：`x += offsetX × 自身宽度`
-  - **竖直**：`y += offsetY × 自身高度`
-- **`0,-0.5`**：水平不动；向上再移 **0.5 倍自身高度**，常和 `|0` 一起微调图标的**视觉居中**。
-
-## 一句话对照
-
-| 写法 | 直观理解 |
-|------|-----------|
-| `-27dp`（水平） | 靠右，距右缘约 27dp |
-| `|0`（垂直） | 在**直接父窗口**内竖直居中 |
-| `offset="0,-0.5"` | 再向上移半个自身高度 |
-
-
-
-
-SOUI 里通常用 <caption> 包住可拖动区域（一般是标题条），系统在 caption 上会走“模拟标题栏”的逻辑，用来拖动整个宿主窗
-
-在最外层 <SOUI ...> 上打开可调尺寸即可，你们工程里已经这么用：
-
-resizable="1"：允许通过边框拖拽改变窗口大小。
-你的 dlg_filters.xml 第 1 行里已经有 resizable="1"。
-
-原因说明（以你们自带的 SOUI 头文件为准）
-在 SHostWnd.h 里，根节点属性对应的成员注释写得很清楚：
-
-
-SHostWnd.h
-Lines 119-119
-		SLayoutSize m_rcMargin[4];       //窗口拉伸的边缘检测大小
-也就是说：margin 四个边不仅是“留白”，还是“窗口拉伸时，在边缘多宽范围内算作可拖拽缩放”的检测带。
-若根上没写 margin，默认往往是 0，可缩放区域宽度为 0，鼠标在视觉上贴着白边也命不中缩放逻辑，表现就是 resizable="1" 开了却拖不动。
-
+--------------------------------------------------------------------------
 # SOUI：TreeView + Adapter 用法笔记
 
 ## 1. 整体关系
@@ -3135,58 +2965,179 @@ bool CMainDlg::OnListViewClick(EventArgs* pEvt)
 | **引用计数** | `SetAdapter` 后立即 `Release()`，生命周期交给控件管理 |
 | **大数据量** | 万级行数据完全没问题，因为任意时刻只有可见行的 `SItemPanel` 存在于内存中 |
 
-# mfc转soui时 event区分
 
-## 1. 放在 `BEGIN_MSG_MAP_EX`（以及 `MESSAGE_HANDLER` / `MSG_WM_*`）里
 
-处理的是 **Windows 消息**：发给**窗口 HWND** 的 `WM_*`，以及你们自己封装的**自定义消息**。
 
-典型来源：
 
-- 原来 MFC 里 **`ON_WM_*`**：`ON_WM_SIZE`、`ON_WM_PAINT`、`ON_WM_TIMER` 等  
-- **`ON_MESSAGE(WM_xxx, ...)`**：例如你们的 `WM_ACAD_KEEPFOCUS`  
-- **对话框生命周期**：原来 `OnInitDialog` → SOUI 里对应 **`MSG_WM_INITDIALOG(OnInitDialog)`**（仍是对话框的 Win32 消息）  
-- **与 AutoCAD / MFC 宿主、焦点、非客户区**等相关的，只要文档里说是 **window message**，都走这条线  
 
-一句话：**只要本质是「这个 HWND 收到的 Win32 消息」→ 用消息映射。**
 
----
 
-## 2. 放在 `EVENT_MAP_BEGIN` 里
 
-处理的是 **SOUI 控件自己的事件**，走 **SOUI 的 EventSet**（`EVT_CMD`、`EVT_CLICK` 等），**不是**传统子控件 `WM_COMMAND` 经 MFC 路由那种路径。
 
-典型对应关系：
 
-- 原来 **`ON_BN_CLICKED`**、**`ON_COMMAND`** 绑的是 **对话框上的资源 ID**，在 MFC 里最终会到 **`WM_COMMAND`**；  
-  转成 SOUI 后，若按钮是 **`SOUI::SButton`** 等，一般应绑 **`EVENT_ID_COMMAND(SOUI::R.id.xxx, ...)`**（或名称映射），因为点击是由 SOUI 在内部转成 **EVT_CMD** 再分发的。  
-- **树、列表、自定义皮肤控件**里子控件的交互，若在 SOUI 里用 **EVENT_MAP** / **subscribeEvent** 那一套，也属于这一类。
 
-一句话：**「SOUI 控件通过 name/id 和 EventSet 发出来的事」→ 用 `EVENT_MAP`。**
 
----
 
-## 3. 实用判断流程（迁移时怎么用）
 
-| 问题 | 更可能放哪 |
-|------|------------|
-| MFC 里是 `ON_MESSAGE` / `ON_WM_*` / 自定义 `WM_`？ | **`BEGIN_MSG_MAP_EX`** |
-| 和**整个对话框窗口**行为有关（初始化、尺寸、焦点策略）？ | **消息映射** |
-| 是 **SOUI XML 里某个控件的 id/name** 的点击、命令？ | **`EVENT_MAP_BEGIN`** |
-| 你在 **C++ 里 `subscribeEvent(EVT_CMD, ...)`** 已经能收到？ | 和 **EVENT_MAP 是同一条 SOUI 事件体系**；二选一或配合使用 |
 
----
 
-## 4. 和「原来 MFC 绑定」的对应关系（避免混淆）
 
-- **ON_BN_CLICKED(某个 IDC)**：在 SOUI 里通常**不是**再写一个 `ON_BN_CLICKED`，而是 **`EVENT_ID_COMMAND(SOUI::R.id.xxx, ...)`**（前提是布局里该按钮的 **name 能解析到 R.id**）。  
-- **ON_NOTIFY(TVN_*, ...)**：树若换成 **`STreeView` + Adapter**，往往变成 **Adapter 里 `getView` / `subscribeEvent`** 或树相关 **EVENT**，而不是原来的 `TVN_*` 通知；这是控件模型变了，要按 SOUI 文档/示例来，不能 1:1 照搬 `ON_NOTIFY`。
 
----
 
-## 5. 简短结论
 
-- **`BEGIN_MSG_MAP_EX`**：**窗口级**、**Win32 消息**、与宿主（CAD）交互、生命周期。  
-- **`EVENT_MAP_BEGIN`**：**SOUI 控件**通过 **R.id / name** 触发的**高层事件**（最常见是按钮「确定」「取消」等）。
 
-若你贴一段**具体 MFC 消息映射**（几行即可），可以按行说明迁移后应落在哪一侧。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
