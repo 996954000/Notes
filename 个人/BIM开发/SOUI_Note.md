@@ -111,6 +111,8 @@ https://github.com/setoutsoft/soui
 - 把编出来的SOUI & bin 和源码中下载就有的 config & utilities 放项目中
 ![示意图](./img/libs.png)
 
+- debug x86 配置下的项目属性
+- 动态链接库放同级目录下，或者系统路径里（如 system32）都行，运行时能找到就行；如果放在其他位置，记得在代码里 LoadLibrary 加载一下。
 - 设置`附加包含目录`, `附加库目录`，`附加依赖项`
 - 项目 属性 c/c++ 常规 
   - $(SolutionDir)extra_lib\config
@@ -923,6 +925,24 @@ SOUI::ISkinObj 的派生类。
 <font face="微软雅黑" size="18"/>
 ```
 只有 `face` 和 `size` 两个属性，影响所有没有单独指定字体的控件。全局生效，是所有控件没有单独指定字体时的兜底。
+- 局部字体
+
+```xml
+<!--基本格式 ： font="key1:value1,key2:value2,..."-->
+<text pos="10,10" font="face:微软雅黑,size:20,bold:1" colorText="#FF0000">
+    标题
+</text>
+```
+
+| key | 含义 | 示例 |
+|-----|------|------|
+| `face` | 字体名 | `face:宋体` |
+| `size` | 字号（绝对值，单位 px）| `size:18` |
+| `adding` | 字号**增量**（相对全局字体 ±N）| `adding:-5` |
+| `bold` | 粗体（0/1，也有写 `bold:5` 的，非 0 即视为 true）| `bold:1` |
+| `italic` | 斜体（0/1）| `italic:1` |
+| `underline` | 下划线（0/1）| `underline:1` |
+| `strike` | 删除线（0/1）| `strike:1` |
 
 #### 3.1.1 系统已安装的字体
 - `face` 直接写字体名即可，只要用户系统里装了就能用，担如果系统中没有则会回退至系统默认字体：
@@ -2965,6 +2985,417 @@ bool CMainDlg::OnListViewClick(EventArgs* pEvt)
 | **引用计数** | `SetAdapter` 后立即 `Release()`，生命周期交给控件管理 |
 | **大数据量** | 万级行数据完全没问题，因为任意时刻只有可见行的 `SItemPanel` 存在于内存中 |
 
+
+
+## 1. 背景与目标
+
+### 1.1 业务目标
+
+将工具条/菜单侧打开的 **构件筛选器** 对话框，从 **MFC + BCG 控件体系** 迁移到 **SOUI**，在尽量保持 **数据接口与筛选结果语义不变** 的前提下，替换 UI 实现方式。
+
+### 1.2 技术目标
+
+- 使用 SOUI 的布局 XML 描述界面，通过 `SHostDialog` 承载对话框生命周期。
+- 树形列表采用 **`STreeView` + `STreeAdapterBase` 派生 Adapter** 的模式，以支持 **三态勾选**、展开折叠与行模板定制。
+- 数据仍通过既有的 **`ILbSelectionSetViewModel`** 拉取与回写，避免在迁移阶段重写业务规则。
+
+---
+
+## 2. 涉及模块与文件索引（仓库内真实路径）
+
+| 角色 | 路径 |
+|------|------|
+| 弹窗入口（当前使用 SOUI） | `code/UI/LbMainUI/Frame/MenuPanel/LbCommonUtils.cpp` → `CLbCommonUtils::CreateFilterDialog()` |
+| SOUI 对话框 | `code/UI/LbMainUI/Frame/MenuPanel/LbFiltersSouiDialog.h` / `.cpp` |
+| 树 Adapter（三态与树数据） | `code/UI/LbMainUI/Common/LbFiltersTreeViewAdapter.h` / `.cpp` |
+| SOUI 布局 | `code/UI/LbMainUI/uires/xml/dlg_filters.xml` |
+| 布局注册 | `code/UI/LbMainUI/uires/uires.idx`（条目 `xml_dlg_filters` → `xml\dlg_filters.xml`） |
+| 数据接口（ViewModel） | `code/FrameWork/LbMainFrame/SelectionSet/ILbSelectionSetViewModel.h` |
+| 构件树节点类型 | `code/CAD/LbCadManager/SelectManager/LbSelectComponentNode.h`（及同目录实现） |
+| MFC 旧实现（仍保留在工程中） | `code/UI/LbMainUI/Frame/MenuPanel/LbFiltersDialog.h` / `.cpp` |
+| MFC 基类对话框（树控件创建等） | `code/UI/LbMainUI/Frame/MenuPanel/LbSelectDialog.h` / `.cpp` |
+| 同类 Adapter 参考（楼层选择等） | `code/UI/LbMainUI/Common/LbFloorslTreeViewAdapter.h` / `.cpp` |
+
+---
+
+## 3. 架构与数据流（准确描述）
+
+### 3.1 分层说明
+
+本功能与工程中 **`ILbSelectionSetViewModel`** 的命名一致：接口注释为「选择集 **viewmodel**」。迁移工作 **未改变** 该接口的职责划分：
+
+- **数据获取**：`GetCurSelectdComponentsData(...)` — 输出填充到 `CLbSelectComponentNode` 为根的树形数据。
+- **结果回写**：`SetPickFirst(selectedComps)` — 将用户在树中的勾选结果写回选择逻辑。
+
+SOUI 侧新增的 `CLbFiltersTreeViewAdapter` 负责 **UI 树状态**（展开、三态、行模板绑定），与 **业务节点** `CLbSelectComponentNode*` 并行存在：Adapter 内部维护 `STreeAdapterBase<FiltersTreeItemData>` 的树结构，并在确认时根据勾选 GUID 从原始 `m_data` 收集叶子节点。
+
+### 3.2 打开对话框与 Model 注入
+
+当前入口代码（SOUI 路径已启用，MFC 路径以注释形式保留）位于 `LbCommonUtils::CreateFilterDialog()`：
+
+- 构造：`CLbFiltersSouiDialog dlg(m_pModel);`
+- `m_pModel` 类型为 `std::shared_ptr<ILbSelectionSetViewModel>`，在对话框构造时保存到成员，供 `InitData()` / `ClickdOk()` 使用。
+
+### 3.3 初始化时序（SOUI）
+
+下列顺序与 `CLbFiltersSouiDialog::OnInitDialog` / `InitData` 及 Adapter 代码一致：
+
+1. **`InitData()`**  
+   - 按静态成员 `m_type`、`m_floor` 组装 `std::vector<LbCompCode> codes`（当 `m_type == 1` 时加入当前激活构件类型）。  
+   - 调用 `m_pModel->GetCurSelectdComponentsData(m_selComNodeData, codes, m_floor)` 填充 `m_selComNodeData`。
+
+2. **`FindChildByID2<STreeView>(R.id.treeview_filters)`** 取得树控件；可选地通过 `m_treeParam` 批量 `SetAttribute`（为后续扩展预留）。
+
+3. **创建 Adapter**：`new CLbFiltersTreeViewAdapter(&m_selComNodeData)`。  
+4. **`RebuildFiltersTree()`**：清空 Adapter 内部树，插入根节点「工程」及子树，并 `notifyBranchChanged`。  
+5. **`InitSelectNodes(m_guids)`**：按 GUID 集合恢复勾选（见下文 **已知缺口**）。  
+6. **`SetAdapter(m_pAdapter)`** 将 Adapter 交给 `STreeView`。
+
+7. **确定**：`ClickdOk()` → `m_pAdapter->GetSelectNodes(selectedComps)` → `m_pModel->SetPickFirst(selectedComps)` → `OnOK()`。
+
+### 3.4 与 MFC 旧版的对应关系
+
+| 环节 | MFC（`CLbFiltersDialog` / `CLbSelectDialog`） | SOUI（当前实现） |
+|------|-----------------------------------------------|------------------|
+| 对话框基类 | `CBCGPDialog` / `CLbSelectDialog` | `SOUI::SHostDialog` |
+| 树控件 | `CBCGPTreeCtrlEx`，样式含 `TVS_CHECKBOXES` | `SOUI::STreeView` + 行模板内 `SCheck3State` |
+| 树数据填充 | `InsertItem` + `SetItemData` 挂 `CLbSelectComponentNode*` | Adapter `InsertItem` + `FiltersTreeItemData` |
+| 勾选遍历 | `TraverseTreeAndGetValues` 依赖 `GetCheck` | `GetNodesStatus` 收集选中叶子 GUID，再 `CollectSelectedNodesFromData` 从 `m_data` 取节点副本 |
+| 命令/消息 | `ON_BN_CLICKED`、`BEGIN_MESSAGE_MAP` | `EVENT_MAP_BEGIN`（如 `R.id.btn_ok`）、`BEGIN_MSG_MAP_EX` |
+| AutoCAD 焦点 | `WM_ACAD_KEEPFOCUS` | 同样映射到成员处理（保持与宿主环境兼容） |
+
+### 3.5 关键代码片段（可直接对照源码）
+
+#### A. 对话框入口与 Model 传入（SOUI 当前路径）
+
+```cpp
+// code/UI/LbMainUI/Frame/MenuPanel/LbCommonUtils.cpp
+void CLbCommonUtils::CreateFilterDialog()
+{
+	if (m_pModel)
+	{
+		/* ... MFC 旧路径已注释 ... */
+		CLbFiltersSouiDialog dlg(m_pModel);
+		// ... parentHwnd 获取逻辑 ...
+		dlg.DoModal();
+	}
+}
+```
+
+#### B. SOUI 对话框构造：布局名 + 选择通知类型保护
+
+```cpp
+// code/UI/LbMainUI/Frame/MenuPanel/LbFiltersSouiDialog.cpp
+CLbFiltersSouiDialog::CLbFiltersSouiDialog(std::shared_ptr<ILbSelectionSetViewModel> pModel)
+	:SHostDialog(L"LAYOUT:xml_dlg_filters")
+{
+	m_eOldNotifyType = LbEditorReactorMng::Instance()->GetSelectionNotifyType();
+	if (LbEditorReactorMng::Instance()->IsInCommand())
+	{
+		if (m_eOldNotifyType != eNotNotify)
+		{
+			LbEditorReactorMng::Instance()->SetSelectionNotifyType(eNotNotify);
+		}
+	}
+	m_pModel = pModel;
+}
+```
+
+#### C. 初始化主链路：取数据 → 建树 → 恢复选中 → 绑定 Adapter
+
+```cpp
+// code/UI/LbMainUI/Frame/MenuPanel/LbFiltersSouiDialog.cpp
+BOOL CLbFiltersSouiDialog::OnInitDialog(HWND wndFocus, LPARAM lInitParam)
+{
+	InitData();
+
+	m_pTreeTempl = FindChildByID2<SOUI::STreeView>(SOUI::R.id.treeview_filters);
+	if (m_pTreeTempl)
+	{
+		for (const auto& var : m_treeParam)
+		{
+			m_pTreeTempl->SetAttribute(var.first.c_str(), var.second.c_str(), true);
+		}
+		m_pAdapter = new CLbFiltersTreeViewAdapter(&m_selComNodeData);
+		m_pAdapter->RebuildFiltersTree();
+		m_pAdapter->InitSelectNodes(m_guids);
+		m_pTreeTempl->SetAdapter(m_pAdapter);
+	}
+	return FALSE;
+}
+```
+
+#### D. 数据获取：沿用 ViewModel 接口，不改业务来源
+
+```cpp
+// code/UI/LbMainUI/Frame/MenuPanel/LbFiltersSouiDialog.cpp
+void CLbFiltersSouiDialog::InitData()
+{
+	std::vector<LbCompCode> codes;
+	if (m_type == 1)
+	{
+		LbCompCode code = GetCurrentSelectCompCode();
+		if (code != LBCT_Unknown)
+		{
+			codes.emplace_back(GetCurrentSelectCompCode());
+		}
+	}
+	m_pModel->GetCurSelectdComponentsData(m_selComNodeData, codes, m_floor);
+}
+```
+
+#### E. Adapter 行渲染绑定：三态勾选 + 展开开关
+
+```cpp
+// code/UI/LbMainUI/Common/LbFiltersTreeViewAdapter.cpp
+void CLbFiltersTreeViewAdapter::getView(SOUI::HTREEITEM loc, SOUI::SWindow* pItem, SOUI::pugi::xml_node xmlTemplate)
+{
+	if (pItem->GetChildrenCount() == 0)
+	{
+		pItem->InitFromXml(xmlTemplate);
+	}
+
+	auto pii = m_tree.GetItemPt((HSTREEITEM)loc);
+	LB_RETURN_VOID_IF(pii == nullptr);
+
+	SOUI::SCheck3State* pCheck = pItem->FindChildByID2<SOUI::SCheck3State>(SOUI::R.id.check_filters);
+	pCheck->GetEventSet()->subscribeEvent(SOUI::EVT_CMD, Subscriber(&CLbFiltersTreeViewAdapter::OnCkFilterClick, this));
+	pCheck->SetCheck3State(pii->data.sCheck);
+	pCheck->SetWindowTextW(pii->data.strName.c_str());
+
+	SOUI::SToggle* pSwitchType = pItem->FindChildByID2<SOUI::SToggle>(SOUI::R.id.tgl_templ_type_switch);
+	pSwitchType->GetEventSet()->subscribeEvent(SOUI::EVT_CMD, Subscriber(&CLbFiltersTreeViewAdapter::OnSwitchClick, this));
+	pSwitchType->SetVisible(TRUE);
+}
+```
+
+#### F. 三态核心入口：点击后写状态并整树刷新
+
+```cpp
+// code/UI/LbMainUI/Common/LbFiltersTreeViewAdapter.cpp
+bool CLbFiltersTreeViewAdapter::OnCkFilterClick(SOUI::EventArgs* pEvt)
+{
+	SOUI::SCheck3State* pCk = SOUI::sobj_cast<SOUI::SCheck3State>(pEvt->sender);
+	SOUI::SItemPanel* pItem = SOUI::sobj_cast<SOUI::SItemPanel>(pCk->GetRoot());
+	SOUI::HTREEITEM loc = (SOUI::HTREEITEM)pItem->GetItemIndex();
+
+	bool check{ false };
+	if (pCk->GetCheckState() == SOUI::Check3State::C3S_mix || pCk->GetCheckState() == SOUI::Check3State::C3S_normal)
+	{
+		check = false;
+	}
+	else
+	{
+		check = true;
+	}
+	SetCheckState(loc, check);
+	notifyBranchChanged(ITEM_ROOT);
+	return true;
+}
+```
+
+#### G. 确认回写：仅回写选中叶子对应业务节点
+
+```cpp
+// code/UI/LbMainUI/Frame/MenuPanel/LbFiltersSouiDialog.cpp
+void CLbFiltersSouiDialog::ClickdOk()
+{
+	std::vector<CLbSelectComponentNode> selectedComps;
+	m_pAdapter->GetSelectNodes(selectedComps);
+	m_pModel->SetPickFirst(selectedComps);
+	OnOK();
+}
+```
+
+---
+
+## 4. SOUI 页面与控件约定
+
+### 4.1 布局名与资源
+
+- 对话框构造：`SHostDialog(L"LAYOUT:xml_dlg_filters")`。  
+- `uires.idx` 中注册名 **`xml_dlg_filters`**，指向 **`dlg_filters.xml`**。
+
+### 4.2 `dlg_filters.xml` 中与代码绑定的关键节点
+
+- **树**：`<treeview name="treeview_filters" ...>` — 代码中使用 **`R.id.treeview_filters`** 查找（name 参与 SOUI 资源 ID 生成；若新增控件 ID 未生成，需 **重新编译资源** 以更新 `R.id`）。  
+- **行模板**：  
+  - `SToggle`：`name="tgl_templ_type_switch"` → `R.id.tgl_templ_type_switch`，用于展开/折叠。  
+  - `SCheck3State`：`name="check_filters"` → `R.id.check_filters`，用于三态勾选。
+
+对应 XML 片段（仓库原文）：
+
+```xml
+<!-- code/UI/LbMainUI/uires/xml/dlg_filters.xml -->
+<treeview name="treeview_filters" ...>
+	<template ...>
+		<window ...>
+			<toggle name="tgl_templ_type_switch" ... />
+			<check3state name="check_filters" ... />
+		</window>
+	</template>
+</treeview>
+```
+
+### 4.3 Adapter：`getView` 职责
+
+`CLbFiltersTreeViewAdapter::getView` 在每一行首次创建时 `InitFromXml(xmlTemplate)`，随后：
+
+- 绑定 `EVT_CMD` 到 `OnCkFilterClick`、`OnSwitchClick`。  
+- 根据 `FiltersTreeItemData` 设置勾选态、标题；**无子节点**时隐藏展开开关，并对叶子 **关闭三态**（`Enable3State(FALSE)`），与「组节点」区分。
+
+---
+
+## 5. 三态勾选与楼层 Adapter 的关系
+
+三态联动逻辑（`SetCheckState`、`SetChildrenState`、`CheckChildrenState`、`CheckState` 等）与 **`CLbFloorslTreeViewAdapter`** 中的同类实现 **同构**，属于项目内可复用的 UI 状态机模式：在 **Adapter 内部树** 上维护 `Check3State`，点击后 `notifyBranchChanged(ITEM_ROOT)` 刷新展示。
+
+**说明**：这是 **UI 层模式复用**，不是业务层复制；业务数据仍只通过 `CLbSelectComponentNode` 与 ViewModel 交互。
+
+楼层 Adapter 中可对照到同类方法族（命名一致或同构）：`InitSelectNodes`、`GetNodesStatus`、`SetChildrenState`、`CheckChildrenState`、`CheckState`、`SetCheckState`，可作为迁移其它树控件时的参考模板。
+
+下面结合 SOUI 作者的官方博客和 wiki（["第十七篇"](http://www.cnblogs.com/setoutsoft/p/4122970.html)、["第十九篇"](http://www.cnblogs.com/setoutsoft/p/4193791.html)）以及我对 DirectUI 框架的理解，系统讲一下 SOUI 渲染性能和加速相关的知识。
+
+---
+
+## 一、先理解为什么 DirectUI 会有性能问题
+
+DirectUI 的底层真相：**整个窗口只有一个 HWND，框架自己遍历控件树做光栅化**。每一帧都要经历：
+
+1. 计算脏区域（哪些控件需要重画）
+2. 控件树深度递归调用 `OnPaint` → 绘制到目标
+3. 合成后提交到屏幕
+
+因此性能瓶颈通常集中在三处：
+- **Alpha 通道混合**（透明、圆角、阴影）
+- **复杂绘制**（9 宫格、渐变、文字测量）
+- **过度重绘**（频繁 Invalidate 或区域不精确）
+
+SOUI 的优化思路基本都是围绕这三点展开。
+
+---
+
+## 二、渲染后端（`render-*.dll`）—— 选对引擎是第一步
+
+SOUI 的 `Render` 是一层抽象接口，可以热插拔不同后端，这是 SOUI 架构里非常关键的设计。
+
+| 后端 | DLL | 特点 | 适用场景 |
+|---|---|---|---|
+| **GDI** | `render-gdi.dll` | 体积小、兼容性好；**原生不支持 Alpha**，需用 `AlphaBlend` 模拟 | 兼容老机器、UI 简单无透明 |
+| **Skia** | `render-skia.dll` | 明显比 GDI 快；**原生支持 Alpha 通道**；DLL 约 1MB | 现代 UI、有透明/圆角/动画 |
+| 自定义 | 用户实现 | Direct2D / Cairo / AGG 等 | 特殊需求 |
+
+根据 SOUI 作者的博客，**只要 UI 里有明显的 Alpha 混合需求（半透明、圆角、阴影、现代扁平风格），优先用 Skia**。你笔记里 `COM_RENDER_GDI` 的加载代码只要换成 `render-skia.dll` 就能切换。
+
+> 注意：我没找到官方明确说 Skia 后端走的是 GPU 加速还是纯 CPU 软件光栅。根据 SOUI 的设计定位（Windows 桌面客户端），**按经验判断它主要是 CPU 软件 Skia**，速度优势来自更高效的 2D 算法而非 GPU。要精确结论建议查 `render-skia` 源码的初始化部分。
+
+---
+
+## 三、脏矩形（Dirty Rect）+ 剪裁区（Clip）
+
+这是 SOUI 渲染的**默认优化**，不用特别配置：
+
+- 调用 `Invalidate()` 触发控件重绘
+- 调用 `InvalidateRect(rc)` 只标脏指定区域
+- 渲染时框架会把脏区域合并成 clip 区域
+- **从顶层向下遍历控件树**，只有与 clip 区域相交的控件才会实际绘制
+
+**实践建议：**
+- 只在状态真正变化时 `Invalidate()`，不要无脑全屏刷新
+- 需要局部变化时优先用 `InvalidateRect`，而不是整个控件 `Invalidate()`
+- 连续修改多个属性时，避免每改一个就触发一次重绘（内部 setter 已做优化，但自定义控件里要小心）
+
+---
+
+## 四、双缓冲（防闪烁的基础设施）
+
+SOUI 默认**全部使用内存 DC 离屏绘制**，绘制完再一次性贴到屏幕，所以默认就不会闪烁。这里不需要你做什么，只需要知道：
+
+- 自定义控件里**不要直接往 HDC 画**，要用传入的 `IRenderTarget` 接口（走的就是离屏缓冲）
+- 这也是为什么 SOUI 能做到"整屏合成"而不出现撕裂
+
+---
+
+## 五、`cache="1"` —— 位图缓存（最直接的加速武器）
+
+这是官方第十七篇博客的核心。
+
+**原理**：开启后 SWindow 会把自己绘制的结果**存成一张位图**，后续只要自身内容没变，重绘时直接 BitBlt 这张位图，跳过所有 `OnPaint` 内部的复杂计算。
+
+| 场景 | 是否推荐开 `cache` |
+|---|---|
+| **顶层背景窗口**（带 9 宫格、渐变、大图） | 强烈推荐 |
+| 复杂自绘控件、图表、带阴影的面板 | 推荐 |
+| 纯色矩形、单张小图按钮 | 不推荐（纯浪费内存） |
+| 内容频繁变化的控件（进度条、文本输入） | 不推荐（缓存会频繁失效反而更慢） |
+
+**代价**：空间换时间，每个开缓存的窗口都多占一份自身大小的位图内存。
+
+---
+
+## 六、`bkgndBlend="0"` —— 跳过父窗口背景混合
+
+第十九篇博客里提到的第二件武器，原理：
+
+- 默认 `bkgndBlend="1"`：控件重绘时，**会先请求父窗口把自己下面的背景画一遍**（这是为了保证半透明合成正确）
+- 设为 `0`：控件不请求父背景，**自己直接画**（相当于告诉框架"我是不透明的，底下是什么我不关心"）
+
+**典型场景**：视频播放窗口、动画窗口、每秒刷新几十次的区域。把父背景绘制链路省掉，能显著降低 CPU 占用。
+
+**前提**：控件自己必须完全覆盖目标区域，否则会看到残影。
+
+---
+
+## 七、数据 - UI 分离（Adapter 模式）
+
+你笔记里已经标出来了：
+
+- `<listview>` / `<treeview>` / `<mclistview>` —— **Adapter 驱动**，只创建可见项的视图控件，滚动时复用
+- `<listctrl>` / `<treectrl>` —— 一个数据项一个控件实例（传统写法）
+
+**对比**：10 万条数据用 `<listctrl>` 可能直接卡死或内存爆炸；用 `<listview>` + Adapter 可以丝滑滚动。**凡是数据量大的列表/树，都应该用 Adapter 版本**。这是 SOUI 渲染性能里最容易被忽视、但提升最明显的一点。
+
+配合 `notifyDataSetChanged()` 做增量刷新，避免全量重建。
+
+---
+
+## 八、减少重绘触发 —— 写代码时的习惯
+
+这块属于"不用框架特性，靠写法"的优化：
+
+| 技巧 | 说明 |
+|---|---|
+| 隐藏用 `display="0"` 而不是 `visible="0"` | 前者完全不参与布局和绘制；后者仍占位 |
+| 合理使用 `clipClient` | 避免子控件画出父范围外还要计算裁剪 |
+| 扁平化控件层级 | 减少递归 `OnPaint` 深度 |
+| 大批量修改完再统一 `Invalidate` | 避免连续触发 |
+| `msgTransparent="1"` 慎用 | 消息穿透会让命中测试走更多控件 |
+
+---
+
+## 九、资源层面的优化
+
+- **图片不要超规格**：一张 4K 图做按钮背景，每次缩放都吃 CPU
+- **9 宫格（sstretchmode）** 比整图缩放快很多，做拉伸元素优先用
+- **GIF / 动画**：`<gif>` 每帧都在重绘整个区域，多个 GIF 叠加时特别耗性能
+- **字体渲染**：`SRichEdit` 远比 `SStatic` 重，能用静态文本就不用富文本
+
+---
+
+## 十、调优顺序建议（实战路径）
+
+遇到 SOUI 界面卡顿时，按这个顺序排查最划算：
+
+1. **先换 Skia 后端** —— 一行代码改动，通常立竿见影
+2. **检查是否用了 Adapter 类列表** —— 大数据必做
+3. **顶层背景窗口加 `cache="1"`** —— 投入产出比最高
+4. **高频刷新区域加 `bkgndBlend="0"`** —— 针对动画/视频
+5. **排查 Invalidate 调用频率** —— 用 OutputDebugString 加日志看每秒多少次
+6. **最后才考虑复杂自绘控件的算法优化**
+
+---
+
+如果你想深入某一点（比如 Skia 后端内部怎么工作、cache 位图的失效时机、Adapter 模式具体怎么写），告诉我，我再展开讲。
 
 
 
